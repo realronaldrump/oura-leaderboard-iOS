@@ -17,24 +17,25 @@ struct LoginView: View {
     }
     
     var body: some View {
-        ZStack {
-            // Background
-            Theme.bgBase.ignoresSafeArea()
-            
-            // Gradient mesh background
-            Theme.gradientMesh
-                .opacity(0.5)
-                .ignoresSafeArea()
-            
-            // Floating orbs
-            FloatingOrbView(size: 200, color: Theme.accentCyan.opacity(0.3), delay: 0)
-                .position(x: 50, y: 150)
-            
-            FloatingOrbView(size: 150, color: Theme.accentPurple.opacity(0.3), delay: 2)
-                .position(x: UIScreen.main.bounds.width - 80, y: 250)
-            
-            FloatingOrbView(size: 100, color: Theme.accentGreen.opacity(0.3), delay: 4)
-                .position(x: 100, y: UIScreen.main.bounds.height - 200)
+        GeometryReader { geometry in
+            ZStack {
+                // Background
+                Theme.bgBase.ignoresSafeArea()
+                
+                // Gradient mesh background
+                Theme.gradientMesh
+                    .opacity(0.5)
+                    .ignoresSafeArea()
+                
+                // Floating orbs
+                FloatingOrbView(size: 200, color: Theme.accentCyan.opacity(0.3), delay: 0)
+                    .position(x: 50, y: 150)
+                
+                FloatingOrbView(size: 150, color: Theme.accentPurple.opacity(0.3), delay: 2)
+                    .position(x: geometry.size.width - 80, y: 250)
+                
+                FloatingOrbView(size: 100, color: Theme.accentGreen.opacity(0.3), delay: 4)
+                    .position(x: 100, y: geometry.size.height - 200)
             
             // Content
             VStack(spacing: 0) {
@@ -116,6 +117,7 @@ struct LoginView: View {
             }
         } message: {
             Text(appState.errorMessage ?? "Unknown error")
+        }
         }
     }
 }

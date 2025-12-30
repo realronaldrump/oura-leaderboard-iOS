@@ -244,10 +244,8 @@ extension AuthService: ASWebAuthenticationPresentationContextProviding {
             ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             
         guard let scene = windowScene else {
-            // Extreme fallback if no scenes exist (unlikely in a foreground app).
-            let fallback = UIWindow()
-            authPresentationAnchor = fallback
-            return fallback
+            // This shouldn't happen in a foreground app
+            fatalError("No window scene available for authentication")
         }
         
         // Return existing key window if possible

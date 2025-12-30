@@ -197,10 +197,8 @@ private struct HeroSection: View {
         VStack(spacing: 24) {
             // Greeting
             VStack(spacing: 8) {
-                Text("Welcome back, ")
+                Text("Welcome back, \(userName)")
                     .foregroundStyle(Theme.textSecondary)
-                + Text(userName)
-                    .foregroundStyle(Theme.accentCyan)
                 
                 Text("Your Health Today")
                     .font(.system(size: 32, weight: .bold))

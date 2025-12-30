@@ -32,12 +32,9 @@ struct BiDirectionalBarView: View {
         VStack(spacing: 4) {
             // Labels row
             HStack {
-                Text(leftLabel ?? "\(leftValue)")
+                Text("\(leftLabel ?? "\(leftValue)")\(unit.isEmpty ? "" : " \(unit)")")
                     .font(.system(size: 11, weight: leftWins && !isTie ? .bold : .regular, design: .monospaced))
                     .foregroundStyle(leftWins && !isTie ? Theme.accentGreen : Theme.textMuted)
-                + Text(unit.isEmpty ? "" : " \(unit)")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.textMuted)
                 
                 Spacer()
                 
@@ -48,12 +45,9 @@ struct BiDirectionalBarView: View {
                 
                 Spacer()
                 
-                Text(rightLabel ?? "\(rightValue)")
+                Text("\(rightLabel ?? "\(rightValue)")\(unit.isEmpty ? "" : " \(unit)")")
                     .font(.system(size: 11, weight: !leftWins && !isTie ? .bold : .regular, design: .monospaced))
                     .foregroundStyle(!leftWins && !isTie ? Theme.accentPurple : Theme.textMuted)
-                + Text(unit.isEmpty ? "" : " \(unit)")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.textMuted)
             }
             
             // Bar

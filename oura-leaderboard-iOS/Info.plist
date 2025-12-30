@@ -21,6 +21,8 @@
 		</dict>
 		<dict/>
 	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>OURA_CLIENT_SECRET</key>
 	<string>g79ylsHoZ9vrjYPzsoeY4jb5XpiLX38FOkZBwAS3_3g</string>
 </dict>
