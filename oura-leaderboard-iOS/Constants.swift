@@ -22,6 +22,17 @@ enum OuraConfig: Sendable {
         "heart_health"
     ]
     
+    // Do not hardcode secrets in source; use env var or Info.plist for local dev.
+    static var clientSecret: String {
+        if let secret = ProcessInfo.processInfo.environment["OURA_CLIENT_SECRET"] {
+            return secret
+        }
+        if let secret = Bundle.main.object(forInfoDictionaryKey: "OURA_CLIENT_SECRET") as? String {
+            return secret
+        }
+        return ""
+    }
+    
     static func authorizationURL(codeChallenge: String, state: String) -> URL {
         var components = URLComponents(string: authBaseURL)!
         components.queryItems = [

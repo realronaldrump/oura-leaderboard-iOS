@@ -78,7 +78,11 @@ class AuthService: NSObject, ObservableObject {
                         let token = try await self.exchangeCodeForToken(code)
                         self.finishAuth(.success(token))
                     } catch {
-                        self.finishAuth(.failure(AuthError.authFailed(error)))
+                        if let authError = error as? AuthError {
+                            self.finishAuth(.failure(authError))
+                        } else {
+                            self.finishAuth(.failure(AuthError.authFailed(error)))
+                        }
                     }
                 }
             }
@@ -153,7 +157,7 @@ class AuthService: NSObject, ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
-        let parameters = [
+        var parameters = [
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": OuraConfig.redirectURI,
@@ -161,11 +165,21 @@ class AuthService: NSObject, ObservableObject {
             "code_verifier": verifier
         ]
 
+        let clientSecret = OuraConfig.clientSecret
+        if !clientSecret.isEmpty {
+            parameters["client_secret"] = clientSecret
+        }
+
         request.httpBody = Self.formURLEncodedBody(parameters)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, 200...299 ~= httpResponse.statusCode else {
-            throw AuthError.tokenExchangeFailed
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AuthError.tokenExchangeFailed(statusCode: -1, message: "Invalid HTTP response")
+        }
+        
+        guard 200...299 ~= httpResponse.statusCode else {
+            let message = Self.tokenErrorMessage(from: data)
+            throw AuthError.tokenExchangeFailed(statusCode: httpResponse.statusCode, message: message)
         }
 
         let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
@@ -176,6 +190,32 @@ class AuthService: NSObject, ObservableObject {
         var components = URLComponents()
         components.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
         return Data((components.percentEncodedQuery ?? "").utf8)
+    }
+    
+    private static func tokenErrorMessage(from data: Data) -> String {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let error = json["error"] as? String
+            let description = json["error_description"] as? String
+            let message = json["message"] as? String
+            
+            if let error, let description, !description.isEmpty {
+                return "\(error): \(description)"
+            }
+            
+            if let error, !error.isEmpty {
+                return error
+            }
+            
+            if let message, !message.isEmpty {
+                return message
+            }
+        }
+        
+        if let body = String(data: data, encoding: .utf8), !body.isEmpty {
+            return body
+        }
+        
+        return "Unknown error"
     }
 
     private func finishAuth(_ result: Result<String, Error>) {
@@ -257,7 +297,7 @@ enum AuthError: Error, LocalizedError {
     case oauthError(String, String?)
     case missingCodeVerifier
     case invalidState
-    case tokenExchangeFailed
+    case tokenExchangeFailed(statusCode: Int, message: String)
     case sessionStartFailed
     
     var errorDescription: String? {
@@ -279,8 +319,11 @@ enum AuthError: Error, LocalizedError {
             return "Missing code verifier for OAuth"
         case .invalidState:
             return "OAuth state did not match"
-        case .tokenExchangeFailed:
-            return "Failed to exchange authorization code for token"
+        case .tokenExchangeFailed(let statusCode, let message):
+            if message.isEmpty {
+                return "Token exchange failed (HTTP \(statusCode))"
+            }
+            return "Token exchange failed (HTTP \(statusCode)): \(message)"
         case .sessionStartFailed:
             return "Failed to start authentication session"
         }
