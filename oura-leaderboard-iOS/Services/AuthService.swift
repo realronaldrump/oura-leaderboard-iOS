@@ -10,6 +10,7 @@ class AuthService: NSObject, ObservableObject {
     static let shared = AuthService()
     
     private var webAuthSession: ASWebAuthenticationSession?
+    private var authPresentationAnchor: ASPresentationAnchor?
     private var authContinuation: CheckedContinuation<String, Error>?
     private var codeVerifier: String?
     private var oauthState: String?
@@ -33,61 +34,61 @@ class AuthService: NSObject, ObservableObject {
             let authURL = OuraConfig.authorizationURL(codeChallenge: challenge, state: state)
             let callbackScheme = OuraConfig.redirectScheme
             
-            webAuthSession = ASWebAuthenticationSession(
+            let session = ASWebAuthenticationSession(
                 url: authURL,
                 callbackURLScheme: callbackScheme
             ) { [weak self] callbackURL, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    if let authError = error as? ASWebAuthenticationSessionError,
-                       authError.code == .canceledLogin {
-                        self.finishAuth(.failure(AuthError.cancelled))
-                    } else {
-                        self.finishAuth(.failure(AuthError.authFailed(error)))
-                    }
-                    return
-                }
-                
-                guard let callbackURL = callbackURL else {
-                    self.finishAuth(.failure(AuthError.noCallbackURL))
-                    return
-                }
-
-                if let oauthError = self.extractOAuthError(from: callbackURL) {
-                    self.finishAuth(.failure(AuthError.oauthError(oauthError.code, oauthError.description)))
-                    return
-                }
-
-                guard let code = self.extractAuthorizationCode(from: callbackURL) else {
-                    self.finishAuth(.failure(AuthError.noAuthorizationCode))
-                    return
-                }
-
-                if let expectedState = self.oauthState {
-                    guard let returnedState = self.extractState(from: callbackURL),
-                          returnedState == expectedState else {
-                        self.finishAuth(.failure(AuthError.invalidState))
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        if let authError = error as? ASWebAuthenticationSessionError,
+                           authError.code == .canceledLogin {
+                            self.finishAuth(.failure(AuthError.cancelled))
+                        } else {
+                            self.finishAuth(.failure(AuthError.authFailed(error)))
+                        }
                         return
                     }
-                }
+                    
+                    guard let callbackURL = callbackURL else {
+                        self.finishAuth(.failure(AuthError.noCallbackURL))
+                        return
+                    }
 
-                Task { [weak self] in
-                    guard let self = self else { return }
+                    if let oauthError = self.extractOAuthError(from: callbackURL) {
+                        self.finishAuth(.failure(AuthError.oauthError(oauthError.code, oauthError.description)))
+                        return
+                    }
+
+                    guard let code = self.extractAuthorizationCode(from: callbackURL) else {
+                        self.finishAuth(.failure(AuthError.noAuthorizationCode))
+                        return
+                    }
+
+                    if let expectedState = self.oauthState {
+                        guard let returnedState = self.extractState(from: callbackURL),
+                              returnedState == expectedState else {
+                            self.finishAuth(.failure(AuthError.invalidState))
+                            return
+                        }
+                    }
+
                     do {
                         let token = try await self.exchangeCodeForToken(code)
-                        await self.finishAuth(.success(token))
+                        self.finishAuth(.success(token))
                     } catch {
-                        await self.finishAuth(.failure(AuthError.authFailed(error)))
+                        self.finishAuth(.failure(AuthError.authFailed(error)))
                     }
                 }
             }
             
-            webAuthSession?.presentationContextProvider = self
-            webAuthSession?.prefersEphemeralWebBrowserSession = false
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            webAuthSession = session
             
-            DispatchQueue.main.async {
-                self.webAuthSession?.start()
+            if !session.start() {
+                self.finishAuth(.failure(AuthError.sessionStartFailed))
             }
         }
     }
@@ -184,6 +185,8 @@ class AuthService: NSObject, ObservableObject {
         case .failure(let error):
             authContinuation?.resume(throwing: error)
         }
+        webAuthSession = nil
+        authPresentationAnchor = nil
         authContinuation = nil
         codeVerifier = nil
         oauthState = nil
@@ -202,21 +205,27 @@ extension AuthService: ASWebAuthenticationPresentationContextProviding {
             
         guard let scene = windowScene else {
             // Extreme fallback if no scenes exist (unlikely in a foreground app).
-            return UIWindow(frame: .zero)
+            let fallback = UIWindow()
+            authPresentationAnchor = fallback
+            return fallback
         }
         
         // Return existing key window if possible
         if let keyWindow = scene.windows.first(where: { $0.isKeyWindow }) {
-             return keyWindow
+            authPresentationAnchor = keyWindow
+            return keyWindow
         }
         
         // Or any window
         if let firstWindow = scene.windows.first {
+            authPresentationAnchor = firstWindow
             return firstWindow
         }
         
         // Or create a new one attached to the scene (satisfying the requirement)
-        return ASPresentationAnchor(windowScene: scene)
+        let anchor = ASPresentationAnchor(windowScene: scene)
+        authPresentationAnchor = anchor
+        return anchor
     }
 }
 
@@ -249,6 +258,7 @@ enum AuthError: Error, LocalizedError {
     case missingCodeVerifier
     case invalidState
     case tokenExchangeFailed
+    case sessionStartFailed
     
     var errorDescription: String? {
         switch self {
@@ -271,6 +281,8 @@ enum AuthError: Error, LocalizedError {
             return "OAuth state did not match"
         case .tokenExchangeFailed:
             return "Failed to exchange authorization code for token"
+        case .sessionStartFailed:
+            return "Failed to start authentication session"
         }
     }
 }

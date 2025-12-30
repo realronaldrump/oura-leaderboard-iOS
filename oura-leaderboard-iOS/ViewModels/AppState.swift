@@ -58,6 +58,7 @@ class AppState {
     
     func login() async {
         authStatus = .loading
+        errorMessage = nil
         
         do {
             let token = try await AuthService.shared.authenticate()

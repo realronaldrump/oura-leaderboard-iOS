@@ -17,7 +17,7 @@ actor AIService {
         nameA: String,
         nameB: String
     ) async throws -> String {
-        let apiKey = AIConfig.geminiAPIKey
+        let apiKey = await MainActor.run { AIConfig.geminiAPIKey }
         
         guard !apiKey.isEmpty else {
             return "AI Briefing unavailable: API Key missing."

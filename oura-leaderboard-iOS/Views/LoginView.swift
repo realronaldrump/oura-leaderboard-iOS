@@ -5,6 +5,17 @@ import SwiftUI
 struct LoginView: View {
     @Environment(AppState.self) private var appState
     
+    private var isShowingError: Binding<Bool> {
+        Binding(
+            get: { appState.errorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    appState.errorMessage = nil
+                }
+            }
+        )
+    }
+    
     var body: some View {
         ZStack {
             // Background
@@ -98,6 +109,13 @@ struct LoginView: View {
                     .padding(.horizontal, 32)
                     .padding(.bottom, 32)
             }
+        }
+        .alert("Login Error", isPresented: isShowingError) {
+            Button("OK") {
+                appState.errorMessage = nil
+            }
+        } message: {
+            Text(appState.errorMessage ?? "Unknown error")
         }
     }
 }
