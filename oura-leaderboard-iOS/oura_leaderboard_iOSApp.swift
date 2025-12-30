@@ -1,17 +1,14 @@
-//
-//  oura_leaderboard_iOSApp.swift
-//  oura-leaderboard-iOS
-//
-//  Created by Davis Deaton on 12/30/25.
-//
-
 import SwiftUI
 
 @main
-struct oura_leaderboard_iOSApp: App {
+struct OuraLeaderboardApp: App {
+    @State private var appState = AppState()
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(appState)
+                .preferredColorScheme(.dark)
         }
     }
 }

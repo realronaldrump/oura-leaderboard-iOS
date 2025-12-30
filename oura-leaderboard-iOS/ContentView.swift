@@ -1,24 +1,21 @@
-//
-//  ContentView.swift
-//  oura-leaderboard-iOS
-//
-//  Created by Davis Deaton on 12/30/25.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(AppState.self) private var appState
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        Group {
+            if appState.activeProfile != nil {
+                DashboardView()
+            } else {
+                LoginView()
+            }
         }
-        .padding()
+        .background(Theme.bgBase)
     }
 }
 
 #Preview {
     ContentView()
+        .environment(AppState())
 }
