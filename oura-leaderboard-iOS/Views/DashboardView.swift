@@ -1,9 +1,21 @@
 import SwiftUI
+import Foundation
 
 // MARK: - Dashboard View
 
 struct DashboardView: View {
     @Environment(AppState.self) private var appState
+    
+    private var isShowingError: Binding<Bool> {
+        Binding(
+            get: { appState.errorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    appState.errorMessage = nil
+                }
+            }
+        )
+    }
     
     var body: some View {
         NavigationStack {
@@ -14,31 +26,40 @@ struct DashboardView: View {
                     LoadingView()
                 } else {
                     ScrollView {
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 24) {
                             // Hero Section
                             HeroSection()
                             
-                            // Main Content
-                            VStack(spacing: 24) {
-                                // View Mode Selector & Leaderboard (if multiple users)
-                                if appState.leaderboardData.count > 1 {
-                                    LeaderboardSection()
-                                }
-                                
-                                // Daily Content
-                                if appState.viewMode == .daily {
-                                    DailyContentView()
-                                }
+                            // View Mode Selector & Leaderboard (if multiple users)
+                            if appState.leaderboardData.count > 1 {
+                                LeaderboardSection()
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 100)
+                            
+                            // Daily Content
+                            if appState.viewMode == .daily {
+                                DailyContentView()
+                            }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 100)
                     }
                     .refreshable {
                         if let profile = appState.activeProfile {
                             await appState.loadDataForProfile(profile)
                         }
                     }
+                }
+            }
+            .overlay(alignment: .top) {
+                if appState.isSyncing {
+                    SyncStatusBanner(
+                        message: appState.syncMessage ?? "Syncing your data...",
+                        lastSyncAt: appState.lastSyncAt
+                    )
+                    .padding(.top, 8)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .allowsHitTesting(false)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -68,6 +89,13 @@ struct DashboardView: View {
             }
             .toolbarBackground(Theme.bgBase.opacity(0.9), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+        }
+        .alert("Data Error", isPresented: isShowingError) {
+            Button("OK") {
+                appState.errorMessage = nil
+            }
+        } message: {
+            Text(appState.errorMessage ?? "Unknown error")
         }
         .task {
             // Load data for all profiles
@@ -105,6 +133,54 @@ private struct LoadingView: View {
                 .font(.system(size: 16))
                 .foregroundStyle(Theme.textSecondary)
         }
+    }
+}
+
+// MARK: - Sync Status Banner
+
+private struct SyncStatusBanner: View {
+    let message: String
+    let lastSyncAt: Date?
+    
+    private static let formatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+    
+    private var lastSyncText: String? {
+        guard let lastSyncAt else { return nil }
+        return "Updated \(Self.formatter.localizedString(for: lastSyncAt, relativeTo: Date()))"
+    }
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .tint(Theme.accentCyan)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                
+                if let lastSyncText {
+                    Text(lastSyncText)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textMuted)
+                }
+            }
+            
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.bgRaised.opacity(0.95))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Theme.borderSubtle, lineWidth: 1)
+        )
+        .shadow(color: Theme.bgBase.opacity(0.4), radius: 8, x: 0, y: 4)
     }
 }
 

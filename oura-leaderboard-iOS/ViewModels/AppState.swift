@@ -29,6 +29,9 @@ class AppState {
     
     // MARK: - UI State
     var isLoading = false
+    var isSyncing = false
+    var syncMessage: String?
+    var lastSyncAt: Date?
     var authStatus: AuthStatus = .unauthenticated
     var viewMode: ViewMode = .daily
     var selectedDateIndex = 0
@@ -143,12 +146,25 @@ class AppState {
     // MARK: - Data Loading
     
     func loadDataForProfile(_ profile: UserProfile) async {
-        await loadDailyStats(for: profile)
-        await loadHeartRate(for: profile)
+        isSyncing = true
+        syncMessage = "Fetching daily stats..."
+        defer {
+            isSyncing = false
+            syncMessage = nil
+        }
+        
+        let dailyLoaded = await loadDailyStats(for: profile)
+        syncMessage = "Fetching heart rate..."
+        let heartRateLoaded = await loadHeartRate(for: profile)
+        
+        if dailyLoaded || heartRateLoaded {
+            lastSyncAt = Date()
+        }
     }
     
-    func loadDailyStats(for profile: UserProfile) async {
-        guard dailyStats[profile.id] == nil else { return }
+    @discardableResult
+    func loadDailyStats(for profile: UserProfile) async -> Bool {
+        guard dailyStats[profile.id] == nil else { return true }
         
         isLoading = true
         defer { isLoading = false }
@@ -156,9 +172,11 @@ class AppState {
         do {
             let stats = try await OuraAPIService.shared.fetchDailyStats(token: profile.token)
             dailyStats[profile.id] = stats
+            return true
         } catch {
             print("Failed to load daily stats: \(error)")
             errorMessage = error.localizedDescription
+            return false
         }
     }
     
@@ -176,14 +194,18 @@ class AppState {
         }
     }
     
-    func loadHeartRate(for profile: UserProfile) async {
-        guard heartRateData[profile.id] == nil else { return }
+    @discardableResult
+    func loadHeartRate(for profile: UserProfile) async -> Bool {
+        guard heartRateData[profile.id] == nil else { return true }
         
         do {
             let hrData = try await OuraAPIService.shared.getHeartRate(token: profile.token)
             heartRateData[profile.id] = hrData
+            return true
         } catch {
             print("Failed to load heart rate: \(error)")
+            errorMessage = error.localizedDescription
+            return false
         }
     }
     

@@ -55,9 +55,9 @@ struct DailySleep: Codable, Identifiable, Sendable {
 }
 
 struct SampleModel: Codable, Sendable {
-    let interval: Int
-    let items: [Int]
-    let timestamp: String
+    let interval: Int?
+    let items: [Double?]?
+    let timestamp: String?
 }
 
 struct SleepSession: Codable, Identifiable, Sendable {
@@ -271,9 +271,9 @@ struct DailyStress: Codable, Identifiable, Sendable {
 // MARK: - Resilience Data
 
 struct ResilienceContributors: Codable, Sendable {
-    var sleepRecovery: Int?
-    var daytimeRecovery: Int?
-    var stress: Int?
+    var sleepRecovery: Double?
+    var daytimeRecovery: Double?
+    var stress: Double?
     
     enum CodingKeys: String, CodingKey {
         case stress

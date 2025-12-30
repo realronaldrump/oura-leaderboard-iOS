@@ -6,24 +6,39 @@ struct DailyContentView: View {
     @Environment(AppState.self) private var appState
     
     var body: some View {
-        VStack(spacing: 24) {
-            // Date Navigation
-            DateNavigator()
-            
-            // Main Scores
-            MainScoresSection()
-            
-            // Sleep Details
-            SleepDetailsSection()
-            
-            // Heart Rate & HRV
-            HeartRateSection()
-            
-            // Activity Details
-            ActivityDetailsSection()
-            
-            // Score Contributors
-            ScoreContributorsSection()
+        if appState.activeStats == nil {
+            VStack(spacing: 12) {
+                ProgressView()
+                    .tint(Theme.accentCyan)
+                Text("Syncing your data")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Pull to refresh if this takes more than a minute.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textMuted)
+            }
+            .frame(maxWidth: .infinity)
+            .glassCard()
+        } else {
+            LazyVStack(spacing: 24) {
+                // Date Navigation
+                DateNavigator()
+                
+                // Main Scores
+                MainScoresSection()
+                
+                // Sleep Details
+                SleepDetailsSection()
+                
+                // Heart Rate & HRV
+                HeartRateSection()
+                
+                // Activity Details
+                ActivityDetailsSection()
+                
+                // Score Contributors
+                ScoreContributorsSection()
+            }
         }
     }
 }
