@@ -1,7 +1,7 @@
 import SwiftUI
 import Combine
 
-// MARK: - App State
+// MARK: - Enhanced App State with Better Performance
 
 @MainActor
 @Observable
@@ -22,20 +22,43 @@ class AppState {
         profiles.first { $0.id == activeProfileId }
     }
     
-    // MARK: - Data Cache
-    var dailyStats: [String: DailyStats] = [:]  // Keyed by profile ID
-    var allTimeStats: [String: DailyStats] = [:]  // Keyed by profile ID
-    var heartRateData: [String: [HeartRate]] = [:]  // Keyed by profile ID
+    // MARK: - Data Cache with Proper Date Alignment
+    private var dataCache = DataCache()
+    
+    // MARK: - Loading States
+    var loadingStates: [String: LoadingState] = [:] // Per-profile loading states
+    var globalLoadingState = LoadingState()
     
     // MARK: - UI State
-    var isLoading = false
-    var isSyncing = false
-    var syncMessage: String?
-    var lastSyncAt: Date?
     var authStatus: AuthStatus = .unauthenticated
     var viewMode: ViewMode = .daily
-    var selectedDateIndex = 0
+    var selectedDate = Date() // Using actual Date instead of index
     var errorMessage: String?
+    var lastSyncAt: Date?
+    var syncMessage: String?
+    
+    // MARK: - All-Time Stats Storage
+    var allTimeStats: [String: DailyStats] = [:]
+    
+    // MARK: - Computed Loading Properties
+    var isLoading: Bool {
+        globalLoadingState.isLoading
+    }
+    
+    var isSyncing: Bool {
+        loadingStates.values.contains { $0.isLoading }
+    }
+    
+    // MARK: - Daily Stats (computed from cache)
+    var dailyStats: [String: DailyStats] {
+        var result: [String: DailyStats] = [:]
+        for profile in profiles {
+            if let data = dataCache.getData(for: profile.id) {
+                result[profile.id] = data.toDailyStats()
+            }
+        }
+        return result
+    }
     
     // MARK: - AI State
     var aiBriefing: String?
@@ -43,6 +66,7 @@ class AppState {
     
     // MARK: - Services
     private let localStorage = LocalProfileStorage.shared
+    private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Initialization
     
@@ -53,8 +77,53 @@ class AppState {
         // Load profiles from local storage
         profiles = localStorage.profiles
         
-        // Try to initialize Firebase (optional)
-        // FirebaseService.shared.initialize()
+        // Setup data refresh timer
+        setupAutoRefresh()
+    }
+    
+    // MARK: - Data Access with Proper Date Alignment
+    
+    var activeStats: ProfileData? {
+        guard let id = activeProfileId else { return nil }
+        return dataCache.getData(for: id)
+    }
+    
+    var currentDateKey: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: selectedDate)
+    }
+    
+    var currentDayData: DayData? {
+        activeStats?.getDayData(for: currentDateKey)
+    }
+    
+    var currentSleep: DailySleep? {
+        currentDayData?.sleep
+    }
+    
+    var currentReadiness: DailyReadiness? {
+        currentDayData?.readiness
+    }
+    
+    var currentActivity: DailyActivity? {
+        currentDayData?.activity
+    }
+    
+    var currentSession: SleepSession? {
+        currentDayData?.session
+    }
+    
+    var currentSpo2: DailySpO2? {
+        currentDayData?.spo2
+    }
+    
+    var currentHeartRate: [HeartRate] {
+        currentDayData?.heartRate ?? []
+    }
+
+    var activeHeartRate: [HeartRate] {
+        currentHeartRate
     }
     
     // MARK: - Authentication
@@ -78,8 +147,9 @@ class AppState {
     }
     
     func addProfile(token: String) async throws {
-        isLoading = true
-        defer { isLoading = false }
+        globalLoadingState.isLoading = true
+        globalLoadingState.message = "Adding profile..."
+        defer { globalLoadingState.isLoading = false }
         
         // Fetch personal info from Oura
         var profile = try await OuraAPIService.shared.getPersonalInfo(token: token)
@@ -107,20 +177,98 @@ class AppState {
         // Set as active profile
         activeProfileId = profile.id
         
-        // Fetch initial data
-        await loadDataForProfile(profile)
+        // Fetch initial data in background
+        await loadDataForProfile(profile, forceRefresh: true)
     }
+    
+    // MARK: - Optimized Data Loading
+    
+    func loadDataForProfile(_ profile: UserProfile, forceRefresh: Bool = false) async {
+        let profileId = profile.id
+        
+        // Check if we already have recent data
+        if !forceRefresh, let lastSync = dataCache.getLastSync(for: profileId),
+           Date().timeIntervalSince(lastSync) < 300 { // 5 minutes
+            return
+        }
+        
+        // Update loading state
+        loadingStates[profileId] = LoadingState(isLoading: true, message: "Syncing data...")
+        
+        // Load data concurrently
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                await self?.loadDailyData(for: profile)
+            }
+            
+            group.addTask { [weak self] in
+                await self?.loadHeartRateData(for: profile)
+            }
+            
+            group.addTask { [weak self] in
+                await self?.loadSpo2Data(for: profile)
+            }
+        }
+        
+        loadingStates[profileId] = LoadingState(isLoading: false)
+        lastSyncAt = Date()
+        dataCache.setLastSync(for: profileId, date: Date())
+    }
+    
+    private func loadDailyData(for profile: UserProfile) async {
+        do {
+            async let sleepData = OuraAPIService.shared.getDailySleep(token: profile.token)
+            async let readinessData = OuraAPIService.shared.getDailyReadiness(token: profile.token)
+            async let activityData = OuraAPIService.shared.getDailyActivity(token: profile.token)
+            async let sessionData = OuraAPIService.shared.getSleepSessions(token: profile.token)
+            
+            let (sleep, readiness, activity, sessions) = await (
+                try sleepData,
+                try readinessData,
+                try activityData,
+                try sessionData
+            )
+            
+            dataCache.updateDailyData(
+                for: profile.id,
+                sleep: sleep,
+                readiness: readiness,
+                activity: activity,
+                sessions: sessions
+            )
+        } catch {
+            print("Failed to load daily data: \(error)")
+            await MainActor.run {
+                errorMessage = "Failed to sync daily data"
+            }
+        }
+    }
+    
+    private func loadHeartRateData(for profile: UserProfile) async {
+        do {
+            let heartRate = try await OuraAPIService.shared.getHeartRate(token: profile.token)
+            dataCache.updateHeartRateData(for: profile.id, heartRate: heartRate)
+        } catch {
+            print("Failed to load heart rate data: \(error)")
+        }
+    }
+    
+    private func loadSpo2Data(for profile: UserProfile) async {
+        do {
+            let spo2 = try await OuraAPIService.shared.getDailySpO2(token: profile.token)
+            dataCache.updateSpo2Data(for: profile.id, spo2: spo2)
+        } catch {
+            print("Failed to load SpO2 data: \(error)")
+        }
+    }
+    
+    // MARK: - Profile Management
     
     func removeProfile(id: String) {
         localStorage.deleteProfile(id: id)
         profiles = localStorage.profiles
+        dataCache.removeData(for: id)
         
-        // Clear data cache
-        dailyStats.removeValue(forKey: id)
-        allTimeStats.removeValue(forKey: id)
-        heartRateData.removeValue(forKey: id)
-        
-        // Clear active profile if it was the one removed
         if activeProfileId == id {
             activeProfileId = profiles.first?.id
         }
@@ -128,7 +276,7 @@ class AppState {
     
     func switchProfile(_ id: String) {
         activeProfileId = id
-        selectedDateIndex = 0
+        selectedDate = Date()
         
         // Load data if not cached
         if let profile = profiles.first(where: { $0.id == id }) {
@@ -138,97 +286,145 @@ class AppState {
         }
     }
     
-    func logout() {
-        activeProfileId = nil
-        authStatus = .unauthenticated
+    // MARK: - Date Navigation
+    
+    var availableDates: [Date] {
+        guard let stats = activeStats else { return [] }
+        return stats.availableDates.sorted(by: >)
     }
     
-    // MARK: - Data Loading
+    var canGoBack: Bool {
+        guard let currentIndex = availableDates.firstIndex(where: { 
+            Calendar.current.isDate($0, inSameDayAs: selectedDate)
+        }) else { return false }
+        return currentIndex < availableDates.count - 1
+    }
     
-    func loadDataForProfile(_ profile: UserProfile) async {
-        isSyncing = true
-        syncMessage = "Fetching daily stats..."
-        defer {
-            isSyncing = false
-            syncMessage = nil
-        }
+    var canGoForward: Bool {
+        guard let currentIndex = availableDates.firstIndex(where: { 
+            Calendar.current.isDate($0, inSameDayAs: selectedDate)
+        }) else { return false }
+        return currentIndex > 0
+    }
+    
+    func goToPreviousDay() {
+        guard canGoBack,
+              let currentIndex = availableDates.firstIndex(where: { 
+                  Calendar.current.isDate($0, inSameDayAs: selectedDate)
+              }) else { return }
         
-        let dailyLoaded = await loadDailyStats(for: profile)
-        syncMessage = "Fetching heart rate..."
-        let heartRateLoaded = await loadHeartRate(for: profile)
+        selectedDate = availableDates[currentIndex + 1]
+        provideHapticFeedback(.selection)
+    }
+    
+    func goToNextDay() {
+        guard canGoForward,
+              let currentIndex = availableDates.firstIndex(where: { 
+                  Calendar.current.isDate($0, inSameDayAs: selectedDate)
+              }) else { return }
         
-        if dailyLoaded || heartRateLoaded {
-            lastSyncAt = Date()
+        selectedDate = availableDates[currentIndex - 1]
+        provideHapticFeedback(.selection)
+    }
+    
+    func goToToday() {
+        selectedDate = Date()
+        provideHapticFeedback(.selection)
+    }
+    
+    // MARK: - Refresh
+    
+    func refreshActiveProfile() async {
+        guard let profile = activeProfile else { return }
+        await loadDataForProfile(profile, forceRefresh: true)
+    }
+    
+    func refreshAllProfiles() async {
+        await withTaskGroup(of: Void.self) { group in
+            for profile in profiles {
+                group.addTask { [weak self] in
+                    await self?.loadDataForProfile(profile, forceRefresh: true)
+                }
+            }
         }
     }
     
-    @discardableResult
-    func loadDailyStats(for profile: UserProfile) async -> Bool {
-        guard dailyStats[profile.id] == nil else { return true }
-        
-        isLoading = true
-        defer { isLoading = false }
-        
-        do {
-            let stats = try await OuraAPIService.shared.fetchDailyStats(token: profile.token)
-            dailyStats[profile.id] = stats
-            return true
-        } catch {
-            print("Failed to load daily stats: \(error)")
-            errorMessage = error.localizedDescription
-            return false
-        }
+    func loadAllProfilesData() async {
+        await refreshAllProfiles()
     }
+    
+    // MARK: - All-Time Stats Loading
     
     func loadAllTimeStats(for profile: UserProfile) async {
-        guard allTimeStats[profile.id] == nil else { return }
-        
         do {
-            let stats = try await OuraAPIService.shared.fetchDailyStats(
-                token: profile.token,
-                start: AppConstants.allTimeStartDate
+            // Fetch extended history (e.g., all available data)
+            async let sleepData = OuraAPIService.shared.getDailySleep(token: profile.token, days: 365)
+            async let readinessData = OuraAPIService.shared.getDailyReadiness(token: profile.token, days: 365)
+            async let activityData = OuraAPIService.shared.getDailyActivity(token: profile.token, days: 365)
+            async let sessionData = OuraAPIService.shared.getSleepSessions(token: profile.token, days: 365)
+            
+            let (sleep, readiness, activity, sessions) = await (
+                try sleepData,
+                try readinessData,
+                try activityData,
+                try sessionData
             )
+            
+            let stats = DailyStats(
+                sleep: sleep,
+                readiness: readiness,
+                activity: activity,
+                session: sessions,
+                spo2: [],
+                stress: [],
+                resilience: []
+            )
+            
             allTimeStats[profile.id] = stats
         } catch {
             print("Failed to load all-time stats: \(error)")
         }
     }
     
-    @discardableResult
-    func loadHeartRate(for profile: UserProfile) async -> Bool {
-        guard heartRateData[profile.id] == nil else { return true }
-        
-        do {
-            let hrData = try await OuraAPIService.shared.getHeartRate(token: profile.token)
-            heartRateData[profile.id] = hrData
-            return true
-        } catch {
-            print("Failed to load heart rate: \(error)")
-            errorMessage = error.localizedDescription
-            return false
+    // MARK: - Logout
+    
+    func logout() {
+        // Remove active profile and clear data
+        if let activeId = activeProfileId {
+            removeProfile(id: activeId)
         }
+        authStatus = .unauthenticated
     }
     
-    func loadAllProfilesData() async {
-        for profile in profiles {
-            await loadDataForProfile(profile)
-        }
+    // MARK: - Auto Refresh
+    
+    private func setupAutoRefresh() {
+        Timer.publish(every: 300, on: .main, in: .common) // Every 5 minutes
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { [weak self] in
+                    await self?.refreshActiveProfile()
+                }
+            }
+            .store(in: &cancellables)
     }
     
     // MARK: - Leaderboard
     
     var leaderboardData: [LeaderboardEntry] {
-        profiles.compactMap { profile -> LeaderboardEntry? in
-            guard let stats = dailyStats[profile.id] else { return nil }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let todayKey = dateFormatter.string(from: today)
+        
+        return profiles.compactMap { profile -> LeaderboardEntry? in
+            guard let data = dataCache.getData(for: profile.id),
+                  let dayData = data.getDayData(for: todayKey) else { return nil }
             
-            let lastSleep = stats.sleep.first
-            let lastReadiness = stats.readiness.first
-            let lastActivity = stats.activity.first
-            let lastSession = stats.session.first
-            
-            let sScore = lastSleep?.score ?? 0
-            let rScore = lastReadiness?.score ?? 0
-            let aScore = lastActivity?.score ?? 0
+            let sScore = dayData.sleep?.score ?? 0
+            let rScore = dayData.readiness?.score ?? 0
+            let aScore = dayData.activity?.score ?? 0
             
             return LeaderboardEntry(
                 id: profile.id,
@@ -238,47 +434,13 @@ class AppState {
                 activity: aScore,
                 average: (sScore + rScore + aScore) / 3,
                 isCurrentUser: profile.id == activeProfileId,
-                steps: lastActivity?.steps,
-                activeCalories: lastActivity?.activeCalories,
-                sleepDuration: lastSession?.totalSleepDuration,
-                averageHrv: lastSession?.averageHrv,
-                restingHeartRate: lastSession?.lowestHeartRate
+                steps: dayData.activity?.steps,
+                activeCalories: dayData.activity?.activeCalories,
+                sleepDuration: dayData.session?.totalSleepDuration,
+                averageHrv: dayData.session?.averageHrv,
+                restingHeartRate: dayData.session?.lowestHeartRate
             )
         }.sorted { $0.average > $1.average }
-    }
-    
-    // MARK: - Current Data Helpers
-    
-    var activeStats: DailyStats? {
-        guard let id = activeProfileId else { return nil }
-        return dailyStats[id]
-    }
-    
-    var currentSleep: DailySleep? {
-        activeStats?.sleep[safe: selectedDateIndex]
-    }
-    
-    var currentReadiness: DailyReadiness? {
-        activeStats?.readiness[safe: selectedDateIndex]
-    }
-    
-    var currentActivity: DailyActivity? {
-        activeStats?.activity[safe: selectedDateIndex]
-    }
-    
-    var currentSession: SleepSession? {
-        guard let day = currentSleep?.day else { return nil }
-        return activeStats?.session.first { $0.day == day } ?? activeStats?.session[safe: selectedDateIndex]
-    }
-    
-    var currentSpo2: DailySpO2? {
-        guard let day = currentSleep?.day else { return nil }
-        return activeStats?.spo2.first { $0.day == day }
-    }
-    
-    var activeHeartRate: [HeartRate] {
-        guard let id = activeProfileId else { return [] }
-        return heartRateData[id] ?? []
     }
     
     // MARK: - AI Insights
@@ -291,15 +453,16 @@ class AppState {
         
         let p1 = profiles[0]
         let p2 = profiles[1]
-        let stats1 = dailyStats[p1.id]
-        let stats2 = dailyStats[p2.id]
         
-        guard stats1 != nil, stats2 != nil else { return }
+        guard let data1 = dataCache.getData(for: p1.id),
+              let data2 = dataCache.getData(for: p2.id),
+              let day1 = data1.getDayData(for: currentDateKey),
+              let day2 = data2.getDayData(for: currentDateKey) else { return }
         
         do {
             let briefing = try await AIService.shared.generateBriefing(
-                statsA: (stats1?.sleep.first, stats1?.readiness.first, stats1?.activity.first),
-                statsB: (stats2?.sleep.first, stats2?.readiness.first, stats2?.activity.first),
+                statsA: (day1.sleep, day1.readiness, day1.activity),
+                statsB: (day2.sleep, day2.readiness, day2.activity),
                 nameA: p1.displayName,
                 nameB: p2.displayName
             )
@@ -310,42 +473,248 @@ class AppState {
         }
     }
     
-    // MARK: - Date Navigation
+    // MARK: - Stats Access
     
-    var canGoBack: Bool {
-        guard let stats = activeStats else { return false }
-        return selectedDateIndex < stats.sleep.count - 1
+    func getDailyStats(for profileId: String) -> DailyStats? {
+        dataCache.getData(for: profileId)?.toDailyStats()
     }
     
-    var canGoForward: Bool {
-        selectedDateIndex > 0
-    }
+    // MARK: - Haptic Feedback
     
-    func goToPreviousDay() {
-        if canGoBack {
-            selectedDateIndex += 1
+    func provideHapticFeedback(_ style: HapticStyle) {
+        let impactFeedback: (UIImpactFeedbackGenerator.FeedbackStyle) -> Void = { impactStyle in
+            let generator = UIImpactFeedbackGenerator(style: impactStyle)
+            generator.prepare()
+            generator.impactOccurred()
         }
-    }
-    
-    func goToNextDay() {
-        if canGoForward {
-            selectedDateIndex -= 1
+        
+        switch style {
+        case .selection:
+            let generator = UISelectionFeedbackGenerator()
+            generator.prepare()
+            generator.selectionChanged()
+        case .success:
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(.success)
+        case .warning:
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(.warning)
+        case .error:
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(.error)
+        case .light:
+            impactFeedback(.light)
+        case .medium:
+            impactFeedback(.medium)
+        case .heavy:
+            impactFeedback(.heavy)
+        case .soft:
+            impactFeedback(.soft)
+        case .rigid:
+            impactFeedback(.rigid)
         }
     }
 }
 
-// MARK: - View Mode
+// MARK: - Haptic Style
 
-enum ViewMode: String, CaseIterable {
-    case daily = "Daily"
-    case versus = "Versus"
-    case history = "History"
+enum HapticStyle {
+    case light
+    case medium
+    case heavy
+    case soft
+    case rigid
+    case selection
+    case success
+    case warning
+    case error
 }
 
-// MARK: - Collection Extension
+// MARK: - Loading State
 
-extension Collection {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
+struct LoadingState {
+    var isLoading = false
+    var message: String?
+    var progress: Double?
+}
+
+// MARK: - Data Cache
+
+private class DataCache {
+    private var cache: [String: ProfileData] = [:]
+    private var lastSync: [String: Date] = [:]
+    
+    func getData(for profileId: String) -> ProfileData? {
+        cache[profileId]
     }
+    
+    func updateDailyData(for profileId: String, sleep: [DailySleep], readiness: [DailyReadiness], 
+                        activity: [DailyActivity], sessions: [SleepSession]) {
+        if cache[profileId] == nil {
+            cache[profileId] = ProfileData()
+        }
+        cache[profileId]?.updateDailyData(sleep: sleep, readiness: readiness, 
+                                         activity: activity, sessions: sessions)
+    }
+    
+    func updateHeartRateData(for profileId: String, heartRate: [HeartRate]) {
+        if cache[profileId] == nil {
+            cache[profileId] = ProfileData()
+        }
+        cache[profileId]?.updateHeartRateData(heartRate: heartRate)
+    }
+    
+    func updateSpo2Data(for profileId: String, spo2: [DailySpO2]) {
+        if cache[profileId] == nil {
+            cache[profileId] = ProfileData()
+        }
+        cache[profileId]?.updateSpo2Data(spo2: spo2)
+    }
+    
+    func removeData(for profileId: String) {
+        cache.removeValue(forKey: profileId)
+        lastSync.removeValue(forKey: profileId)
+    }
+    
+    func getLastSync(for profileId: String) -> Date? {
+        lastSync[profileId]
+    }
+    
+    func setLastSync(for profileId: String, date: Date) {
+        lastSync[profileId] = date
+    }
+}
+
+// MARK: - Profile Data
+
+class ProfileData {
+    private var dayDataMap: [String: DayData] = [:]
+    
+    var availableDates: [Date] {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return dayDataMap.keys.compactMap { formatter.date(from: $0) }
+    }
+    
+    func getDayData(for dateKey: String) -> DayData? {
+        dayDataMap[dateKey]
+    }
+    
+    func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness], 
+                        activity: [DailyActivity], sessions: [SleepSession]) {
+        // Update sleep data
+        for item in sleep {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.sleep = item
+        }
+        
+        // Update readiness data
+        for item in readiness {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.readiness = item
+        }
+        
+        // Update activity data
+        for item in activity {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.activity = item
+        }
+        
+        // Update session data
+        for session in sessions {
+            if dayDataMap[session.day] == nil {
+                dayDataMap[session.day] = DayData()
+            }
+            dayDataMap[session.day]?.session = session
+        }
+    }
+    
+    func updateHeartRateData(heartRate: [HeartRate]) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        
+        // Group heart rate by day
+        let grouped = Dictionary(grouping: heartRate) { hr in
+            formatter.string(from: hr.date)
+        }
+        
+        for (dateKey, hrData) in grouped {
+            if dayDataMap[dateKey] == nil {
+                dayDataMap[dateKey] = DayData()
+            }
+            dayDataMap[dateKey]?.heartRate = hrData.sorted { $0.timestamp < $1.timestamp }
+        }
+    }
+    
+    func updateSpo2Data(spo2: [DailySpO2]) {
+        for item in spo2 {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.spo2 = item
+        }
+    }
+
+    var sleep: [DailySleep] {
+        toDailyStats().sleep
+    }
+    
+    var readiness: [DailyReadiness] {
+        toDailyStats().readiness
+    }
+    
+    var activity: [DailyActivity] {
+        toDailyStats().activity
+    }
+    
+    var session: [SleepSession] {
+        toDailyStats().session
+    }
+    
+    var spo2: [DailySpO2] {
+        toDailyStats().spo2
+    }
+    
+    var stress: [DailyStress] {
+        toDailyStats().stress
+    }
+    
+    var resilience: [DailyResilience] {
+        toDailyStats().resilience
+    }
+    
+    func toDailyStats() -> DailyStats {
+        let sortedDays = dayDataMap.keys.sorted()
+        let allData = sortedDays.compactMap { dayDataMap[$0] }
+        
+        return DailyStats(
+            sleep: allData.compactMap { $0.sleep },
+            readiness: allData.compactMap { $0.readiness },
+            activity: allData.compactMap { $0.activity },
+            session: allData.compactMap { $0.session },
+            spo2: allData.compactMap { $0.spo2 },
+            stress: [],
+            resilience: []
+        )
+    }
+}
+
+// MARK: - Day Data
+
+struct DayData {
+    var sleep: DailySleep?
+    var readiness: DailyReadiness?
+    var activity: DailyActivity?
+    var session: SleepSession?
+    var spo2: DailySpO2?
+    var heartRate: [HeartRate] = []
 }

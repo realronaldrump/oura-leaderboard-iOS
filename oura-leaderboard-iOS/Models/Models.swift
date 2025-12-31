@@ -25,6 +25,14 @@ struct UserProfile: Codable, Identifiable, Equatable, Sendable {
         }
         return email?.components(separatedBy: "@").first ?? "User"
     }
+    
+    var initials: String {
+        if let firstName = firstName, let lastName = lastName,
+           !firstName.isEmpty, !lastName.isEmpty {
+            return "\(firstName.prefix(1))\(lastName.prefix(1))".uppercased()
+        }
+        return displayName.prefix(2).uppercased()
+    }
 }
 
 // MARK: - Sleep Data
@@ -232,6 +240,14 @@ struct HeartRate: Codable, Identifiable, Sendable {
     let timestamp: String
 }
 
+extension HeartRate {
+    var date: Date {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+        return formatter.date(from: timestamp) ?? Date()
+    }
+}
+
 // MARK: - SpO2 Data
 
 struct Spo2Percentage: Codable, Sendable {
@@ -289,6 +305,159 @@ struct DailyResilience: Codable, Identifiable, Sendable {
     var contributors: ResilienceContributors?
 }
 
+// MARK: - Tag Data
+
+struct Tag: Codable, Identifiable, Sendable {
+    let id: String
+    let day: String
+    var text: String?
+    var timestamp: String?
+    var tags: [String]?
+}
+
+struct EnhancedTag: Codable, Identifiable, Sendable {
+    let id: String
+    let day: String
+    var tagTypeCode: String?
+    var startTime: String?
+    var endTime: String?
+    var comment: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, day, comment
+        case tagTypeCode = "tag_type_code"
+        case startTime = "start_time"
+        case endTime = "end_time"
+    }
+}
+
+// MARK: - Session Data (Meditation/Relaxation)
+
+struct Session: Codable, Identifiable, Sendable {
+    let id: String
+    let day: String
+    var startDatetime: String?
+    var endDatetime: String?
+    var type: String?
+    var heartRate: SampleModel?
+    var heartRateVariability: SampleModel?
+    var mood: String?
+    var motionCount: SampleModel?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, day, type, mood
+        case startDatetime = "start_datetime"
+        case endDatetime = "end_datetime"
+        case heartRate = "heart_rate"
+        case heartRateVariability = "heart_rate_variability"
+        case motionCount = "motion_count"
+    }
+}
+
+// MARK: - Sleep Time Recommendations
+
+struct SleepTimeRecommendation: Codable, Sendable {
+    var optimalBedtime: OptimalBedtime?
+    
+    enum CodingKeys: String, CodingKey {
+        case optimalBedtime = "optimal_bedtime"
+    }
+}
+
+struct OptimalBedtime: Codable, Sendable {
+    var dayTz: Int?
+    var startOffset: Int?
+    var endOffset: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case dayTz = "day_tz"
+        case startOffset = "start_offset"
+        case endOffset = "end_offset"
+    }
+}
+
+struct SleepTime: Codable, Identifiable, Sendable {
+    let id: String
+    let day: String
+    var recommendation: String?
+    var status: String?
+    var optimalBedtime: OptimalBedtime?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, day, recommendation, status
+        case optimalBedtime = "optimal_bedtime"
+    }
+}
+
+// MARK: - Rest Mode Period
+
+struct RestModeEpisode: Codable, Sendable {
+    var tags: [String]?
+    var timestamp: String?
+}
+
+struct RestModePeriod: Codable, Identifiable, Sendable {
+    let id: String
+    var startDay: String?
+    var endDay: String?
+    var startTime: String?
+    var endTime: String?
+    var episodes: [RestModeEpisode]?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, episodes
+        case startDay = "start_day"
+        case endDay = "end_day"
+        case startTime = "start_time"
+        case endTime = "end_time"
+    }
+}
+
+// MARK: - Ring Configuration
+
+struct RingConfiguration: Codable, Identifiable, Sendable {
+    let id: String
+    var color: String?
+    var design: String?
+    var firmwareVersion: String?
+    var hardwareType: String?
+    var setUpAt: String?
+    var size: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, color, design, size
+        case firmwareVersion = "firmware_version"
+        case hardwareType = "hardware_type"
+        case setUpAt = "set_up_at"
+    }
+}
+
+// MARK: - Cardiovascular Age
+
+struct CardiovascularAge: Codable, Identifiable, Sendable {
+    let id: String
+    let day: String
+    var vascularAge: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, day
+        case vascularAge = "vascular_age"
+    }
+}
+
+// MARK: - VO2 Max
+
+struct VO2Max: Codable, Identifiable, Sendable {
+    let id: String
+    let day: String
+    var vo2Max: Double?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, day
+        case vo2Max = "vo2_max"
+    }
+}
+
 // MARK: - Workout Data
 
 struct Workout: Codable, Identifiable, Sendable {
@@ -308,6 +477,14 @@ struct Workout: Codable, Identifiable, Sendable {
         case endDatetime = "end_datetime"
         case startDatetime = "start_datetime"
     }
+}
+
+// MARK: - View Mode
+
+enum ViewMode: String, CaseIterable {
+    case daily = "Daily"
+    case versus = "Versus"
+    case history = "History"
 }
 
 // MARK: - Leaderboard Entry

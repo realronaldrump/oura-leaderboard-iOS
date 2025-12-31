@@ -17,12 +17,12 @@ struct VersusView: View {
     
     private var statsA: DailyStats? {
         guard let id = userA?.id else { return nil }
-        return appState.dailyStats[id]
+        return appState.getDailyStats(for: id)
     }
     
     private var statsB: DailyStats? {
         guard let id = userB?.id else { return nil }
-        return appState.dailyStats[id]
+        return appState.getDailyStats(for: id)
     }
     
     var body: some View {

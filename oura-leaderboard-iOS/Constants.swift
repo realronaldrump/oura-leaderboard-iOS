@@ -64,6 +64,15 @@ enum APIConfig: Sendable {
         case dailyStress
         case dailyResilience
         case workout
+        // New endpoints for full API coverage
+        case tag
+        case enhancedTag
+        case session
+        case sleepTime
+        case restModePeriod
+        case ringConfiguration
+        case dailyCardiovascularAge
+        case vo2Max
         
         nonisolated var path: String {
             switch self {
@@ -77,6 +86,14 @@ enum APIConfig: Sendable {
             case .dailyStress: return "/daily_stress"
             case .dailyResilience: return "/daily_resilience"
             case .workout: return "/workout"
+            case .tag: return "/tag"
+            case .enhancedTag: return "/enhanced_tag"
+            case .session: return "/session"
+            case .sleepTime: return "/sleep_time"
+            case .restModePeriod: return "/rest_mode_period"
+            case .ringConfiguration: return "/ring_configuration"
+            case .dailyCardiovascularAge: return "/daily_cardiovascular_age"
+            case .vo2Max: return "/vO2_max"
             }
         }
     }

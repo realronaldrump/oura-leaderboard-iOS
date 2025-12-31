@@ -6,9 +6,9 @@ struct ContentView: View {
     var body: some View {
         Group {
             if appState.activeProfile != nil {
-                DashboardView()
+                EnhancedDashboardView()
             } else {
-                LoginView()
+                EnhancedLoginView()
             }
         }
         .background(Theme.bgBase)

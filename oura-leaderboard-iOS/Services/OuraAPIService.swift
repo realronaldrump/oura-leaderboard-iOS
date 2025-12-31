@@ -73,42 +73,63 @@ final class OuraAPIService: Sendable {
         token: String,
         startDate: String? = nil,
         endDate: String? = nil,
-        useDatetime: Bool = false
+        useDatetime: Bool = false,
+        useDateFilter: Bool = true
     ) async throws -> [T] {
+        var allData: [T] = []
+        var nextToken: String? = nil
+        
+        // Calculate date range if needed
         var start = ""
         var end = ""
         
-        if let startDate = startDate {
-             let range = getDateRange(start: startDate, end: endDate)
-             start = range.start
-             end = range.end
-        } else {
-             let daysBack = AppConstants.defaultDataRangeDays
-             let range = getDateRange(daysBack: daysBack)
-             start = range.start
-             end = range.end
+        if useDateFilter {
+            if let startDate = startDate {
+                let range = getDateRange(start: startDate, end: endDate)
+                start = range.start
+                end = range.end
+            } else {
+                let daysBack = AppConstants.defaultDataRangeDays
+                let range = getDateRange(daysBack: daysBack)
+                start = range.start
+                end = range.end
+            }
         }
         
-        var queryItems: [URLQueryItem]
-        if useDatetime {
-            queryItems = [
-                URLQueryItem(name: "start_datetime", value: "\(start)T00:00:00"),
-                URLQueryItem(name: "end_datetime", value: "\(end)T23:59:59")
-            ]
-        } else {
-            queryItems = [
-                URLQueryItem(name: "start_date", value: start),
-                URLQueryItem(name: "end_date", value: end)
-            ]
-        }
+        // Paginate through all results
+        repeat {
+            var queryItems: [URLQueryItem] = []
+            
+            if useDateFilter {
+                if useDatetime {
+                    queryItems = [
+                        URLQueryItem(name: "start_datetime", value: "\(start)T00:00:00"),
+                        URLQueryItem(name: "end_datetime", value: "\(end)T23:59:59")
+                    ]
+                } else {
+                    queryItems = [
+                        URLQueryItem(name: "start_date", value: start),
+                        URLQueryItem(name: "end_date", value: end)
+                    ]
+                }
+            }
+            
+            // Add pagination token if we have one
+            if let token = nextToken {
+                queryItems.append(URLQueryItem(name: "next_token", value: token))
+            }
+            
+            let response: OuraDataResponse<T> = try await makeRequest(
+                endpoint: endpoint,
+                token: token,
+                queryItems: queryItems
+            )
+            
+            allData.append(contentsOf: response.data)
+            nextToken = response.nextToken
+        } while nextToken != nil
         
-        // Ensure OuraDataResponse is available or defined in your project
-        let response: OuraDataResponse<T> = try await makeRequest(
-            endpoint: endpoint,
-            token: token,
-            queryItems: queryItems
-        )
-        return response.data
+        return allData
     }
     
     // MARK: - API Methods
@@ -176,6 +197,27 @@ final class OuraAPIService: Sendable {
         try await fetchDataArray(endpoint: .dailyActivity, token: token, startDate: start, endDate: end)
     }
     
+    // Convenience overloads with days parameter
+    func getDailySleep(token: String, days: Int) async throws -> [DailySleep] {
+        let (start, end) = getDateRange(daysBack: days)
+        return try await fetchDataArray(endpoint: .dailySleep, token: token, startDate: start, endDate: end)
+    }
+    
+    func getSleepSessions(token: String, days: Int) async throws -> [SleepSession] {
+        let (start, end) = getDateRange(daysBack: days)
+        return try await fetchDataArray(endpoint: .sleep, token: token, startDate: start, endDate: end)
+    }
+    
+    func getDailyReadiness(token: String, days: Int) async throws -> [DailyReadiness] {
+        let (start, end) = getDateRange(daysBack: days)
+        return try await fetchDataArray(endpoint: .dailyReadiness, token: token, startDate: start, endDate: end)
+    }
+    
+    func getDailyActivity(token: String, days: Int) async throws -> [DailyActivity] {
+        let (start, end) = getDateRange(daysBack: days)
+        return try await fetchDataArray(endpoint: .dailyActivity, token: token, startDate: start, endDate: end)
+    }
+    
     func getHeartRate(token: String) async throws -> [HeartRate] {
         let daysBack = AppConstants.heartRateDataRangeDays
         let (start, end) = getDateRange(daysBack: daysBack)
@@ -212,6 +254,88 @@ final class OuraAPIService: Sendable {
     
     func getWorkouts(token: String, start: String? = nil, end: String? = nil) async throws -> [Workout] {
         try await fetchDataArray(endpoint: .workout, token: token, startDate: start, endDate: end)
+    }
+    
+    // MARK: - New API Methods (Full Coverage)
+    
+    /// Fetch user-created tags for tracking symptoms, supplements, meals, etc.
+    func getTags(token: String, start: String? = nil, end: String? = nil) async throws -> [Tag] {
+        do {
+            return try await fetchDataArray(endpoint: .tag, token: token, startDate: start, endDate: end)
+        } catch {
+            print("Tags data not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch enhanced tags with more context
+    func getEnhancedTags(token: String, start: String? = nil, end: String? = nil) async throws -> [EnhancedTag] {
+        do {
+            return try await fetchDataArray(endpoint: .enhancedTag, token: token, startDate: start, endDate: end)
+        } catch {
+            print("Enhanced tags data not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch meditation and relaxation sessions
+    func getSessions(token: String, start: String? = nil, end: String? = nil) async throws -> [Session] {
+        do {
+            return try await fetchDataArray(endpoint: .session, token: token, startDate: start, endDate: end)
+        } catch {
+            print("Sessions data not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch recommended sleep time windows
+    func getSleepTime(token: String, start: String? = nil, end: String? = nil) async throws -> [SleepTime] {
+        do {
+            return try await fetchDataArray(endpoint: .sleepTime, token: token, startDate: start, endDate: end)
+        } catch {
+            print("Sleep time data not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch rest mode periods for recovery tracking
+    func getRestModePeriods(token: String, start: String? = nil, end: String? = nil) async throws -> [RestModePeriod] {
+        do {
+            return try await fetchDataArray(endpoint: .restModePeriod, token: token, startDate: start, endDate: end)
+        } catch {
+            print("Rest mode data not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch ring configuration - no date filter needed
+    func getRingConfiguration(token: String) async throws -> [RingConfiguration] {
+        do {
+            return try await fetchDataArray(endpoint: .ringConfiguration, token: token, useDateFilter: false)
+        } catch {
+            print("Ring configuration not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch daily cardiovascular age estimates
+    func getCardiovascularAge(token: String, start: String? = nil, end: String? = nil) async throws -> [CardiovascularAge] {
+        do {
+            return try await fetchDataArray(endpoint: .dailyCardiovascularAge, token: token, startDate: start, endDate: end)
+        } catch {
+            print("Cardiovascular age data not available: \(error)")
+            return []
+        }
+    }
+    
+    /// Fetch VO2 max estimates for cardiorespiratory fitness
+    func getVO2Max(token: String, start: String? = nil, end: String? = nil) async throws -> [VO2Max] {
+        do {
+            return try await fetchDataArray(endpoint: .vo2Max, token: token, startDate: start, endDate: end)
+        } catch {
+            print("VO2 max data not available: \(error)")
+            return []
+        }
     }
     
     // MARK: - Aggregate Fetch
