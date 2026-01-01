@@ -566,5 +566,152 @@ func formatTime(_ isoString: String?) -> String {
     // Use static formatters to avoid expensive allocations
     guard let parsedDate = Formatters.parseISO8601(isoString) else { return "--" }
     
+
     return Formatters.displayTime.string(from: parsedDate)
+}
+
+// MARK: - App State Models
+
+struct ProfileData {
+    private var dayDataMap: [String: DayData] = [:]
+    
+    var availableDates: [Date] {
+        // Use static formatter instead of creating new instance
+        dayDataMap.keys.compactMap { Formatters.date(fromDayKey: $0) }
+    }
+    
+    func getDayData(for dateKey: String) -> DayData? {
+        dayDataMap[dateKey]
+    }
+    
+    mutating func setDayData(_ data: DayData, for dateKey: String) {
+        dayDataMap[dateKey] = data
+    }
+    
+    mutating func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness], 
+                        activity: [DailyActivity], sessions: [SleepSession]) {
+        // Update sleep data
+        for item in sleep {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.sleep = item
+        }
+        
+        // Update readiness data
+        for item in readiness {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.readiness = item
+        }
+        
+        // Update activity data
+        for item in activity {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.activity = item
+        }
+        
+        // Update session data
+        for session in sessions {
+            if dayDataMap[session.day] == nil {
+                dayDataMap[session.day] = DayData()
+            }
+            dayDataMap[session.day]?.session = session
+        }
+    }
+    
+    mutating func updateHeartRateData(heartRate: [HeartRate]) {
+        // Use static formatter instead of creating new instance
+        // Group heart rate by day
+        let grouped = Dictionary(grouping: heartRate) { hr in
+            Formatters.dayKeyString(from: hr.date)
+        }
+        
+        for (dateKey, hrData) in grouped {
+            if dayDataMap[dateKey] == nil {
+                dayDataMap[dateKey] = DayData()
+            }
+            dayDataMap[dateKey]?.heartRate = hrData.sorted { $0.timestamp < $1.timestamp }
+        }
+    }
+    
+    mutating func updateSpo2Data(spo2: [DailySpO2]) {
+        for item in spo2 {
+            if dayDataMap[item.day] == nil {
+                dayDataMap[item.day] = DayData()
+            }
+            dayDataMap[item.day]?.spo2 = item
+        }
+    }
+
+    var sleep: [DailySleep] {
+        toDailyStats().sleep
+    }
+    
+    var readiness: [DailyReadiness] {
+        toDailyStats().readiness
+    }
+    
+    var activity: [DailyActivity] {
+        toDailyStats().activity
+    }
+    
+    var session: [SleepSession] {
+        toDailyStats().session
+    }
+    
+    var spo2: [DailySpO2] {
+        toDailyStats().spo2
+    }
+    
+    var stress: [DailyStress] {
+        toDailyStats().stress
+    }
+    
+    var resilience: [DailyResilience] {
+        toDailyStats().resilience
+    }
+    
+    func toDailyStats() -> DailyStats {
+        let sortedDays = dayDataMap.keys.sorted()
+        let allData = sortedDays.compactMap { dayDataMap[$0] }
+        
+        return DailyStats(
+            sleep: allData.compactMap { $0.sleep },
+            readiness: allData.compactMap { $0.readiness },
+            activity: allData.compactMap { $0.activity },
+            session: allData.compactMap { $0.session },
+            spo2: allData.compactMap { $0.spo2 },
+            stress: [],
+            resilience: []
+        )
+    }
+    
+    /// Convert to Codable format for persistence
+    func toCodableProfileData(lastSync: Date?) -> CodableProfileData {
+        var codableDays: [String: CodableDayData] = [:]
+        for (key, day) in dayDataMap {
+            codableDays[key] = CodableDayData(
+                sleep: day.sleep,
+                readiness: day.readiness,
+                activity: day.activity,
+                session: day.session,
+                spo2: day.spo2,
+                heartRate: day.heartRate
+            )
+        }
+        return CodableProfileData(dayDataMap: codableDays, lastSyncDate: lastSync)
+    }
+}
+
+struct DayData {
+    var sleep: DailySleep?
+    var readiness: DailyReadiness?
+    var activity: DailyActivity?
+    var session: SleepSession?
+    var spo2: DailySpO2?
+    var heartRate: [HeartRate] = []
 }
