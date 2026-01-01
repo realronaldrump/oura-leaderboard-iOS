@@ -241,10 +241,9 @@ struct HeartRate: Codable, Identifiable, Sendable {
 }
 
 extension HeartRate {
+    /// Pre-computed date from timestamp using static formatter (no repeated allocations)
     var date: Date {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
-        return formatter.date(from: timestamp) ?? Date()
+        Formatters.heartRateTimestamp.date(from: timestamp) ?? Date()
     }
 }
 
@@ -563,19 +562,9 @@ func formatDuration(_ seconds: Int?) -> String {
 
 func formatTime(_ isoString: String?) -> String {
     guard let isoString = isoString else { return "--" }
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     
-    // Try with fractional seconds first, then without
-    var date = formatter.date(from: isoString)
-    if date == nil {
-        formatter.formatOptions = [.withInternetDateTime]
-        date = formatter.date(from: isoString)
-    }
+    // Use static formatters to avoid expensive allocations
+    guard let parsedDate = Formatters.parseISO8601(isoString) else { return "--" }
     
-    guard let parsedDate = date else { return "--" }
-    
-    let displayFormatter = DateFormatter()
-    displayFormatter.dateFormat = "h:mm a"
-    return displayFormatter.string(from: parsedDate)
+    return Formatters.displayTime.string(from: parsedDate)
 }

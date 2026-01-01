@@ -23,7 +23,10 @@ class AppState {
     }
     
     // MARK: - Data Cache with Proper Date Alignment
-    private var dataCache = DataCache()
+    // Actor-based cache for thread-safe persistence operations
+    private let dataCache = DataCache()
+    // Local mirror for synchronous view access (updated after cache operations)
+    private var localCache: [String: ProfileData] = [:]
     
     // MARK: - Loading States
     var loadingStates: [String: LoadingState] = [:] // Per-profile loading states
@@ -49,11 +52,11 @@ class AppState {
         loadingStates.values.contains { $0.isLoading }
     }
     
-    // MARK: - Daily Stats (computed from cache)
+    // MARK: - Daily Stats (computed from local cache mirror)
     var dailyStats: [String: DailyStats] {
         var result: [String: DailyStats] = [:]
         for profile in profiles {
-            if let data = dataCache.getData(for: profile.id) {
+            if let data = localCache[profile.id] {
                 result[profile.id] = data.toDailyStats()
             }
         }
@@ -79,19 +82,34 @@ class AppState {
         
         // Setup data refresh timer
         setupAutoRefresh()
+        
+        // Load cached data from disk for instant UI (async)
+        Task {
+            await loadCachedDataFromDisk()
+        }
+    }
+    
+    /// Load all profile data from disk cache for instant UI on app launch
+    private func loadCachedDataFromDisk() async {
+        for profile in profiles {
+            await dataCache.loadFromDisk(for: profile.id)
+            // Update local mirror for synchronous view access
+            if let data = await dataCache.getData(for: profile.id) {
+                localCache[profile.id] = data
+            }
+        }
     }
     
     // MARK: - Data Access with Proper Date Alignment
     
     var activeStats: ProfileData? {
         guard let id = activeProfileId else { return nil }
-        return dataCache.getData(for: id)
+        return localCache[id]
     }
     
     var currentDateKey: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: selectedDate)
+        // Use static formatter instead of creating new instance
+        Formatters.dayKeyString(from: selectedDate)
     }
     
     var currentDayData: DayData? {
@@ -187,7 +205,7 @@ class AppState {
         let profileId = profile.id
         
         // Check if we already have recent data
-        if !forceRefresh, let lastSync = dataCache.getLastSync(for: profileId),
+        if !forceRefresh, let lastSync = await dataCache.getLastSync(for: profileId),
            Date().timeIntervalSince(lastSync) < 300 { // 5 minutes
             return
         }
@@ -195,24 +213,27 @@ class AppState {
         // Update loading state
         loadingStates[profileId] = LoadingState(isLoading: true, message: "Syncing data...")
         
-        // Load data concurrently
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in
-                await self?.loadDailyData(for: profile)
-            }
-            
-            group.addTask { [weak self] in
-                await self?.loadHeartRateData(for: profile)
-            }
-            
-            group.addTask { [weak self] in
-                await self?.loadSpo2Data(for: profile)
-            }
+        // Sequential loading with small delays to prevent API rate limiting (429 errors)
+        // This is especially important when multiple profiles are being synced
+        await loadDailyData(for: profile)
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+        
+        await loadHeartRateData(for: profile)
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+        
+        await loadSpo2Data(for: profile)
+        
+        // Update local cache mirror for synchronous view access
+        if let data = await dataCache.getData(for: profileId) {
+            localCache[profileId] = data
         }
+        
+        // Persist to disk for offline access and instant UI on next launch
+        await dataCache.saveToDisk(for: profileId)
+        await dataCache.setLastSync(for: profileId, date: Date())
         
         loadingStates[profileId] = LoadingState(isLoading: false)
         lastSyncAt = Date()
-        dataCache.setLastSync(for: profileId, date: Date())
     }
     
     private func loadDailyData(for profile: UserProfile) async {
@@ -229,7 +250,7 @@ class AppState {
                 try sessionData
             )
             
-            dataCache.updateDailyData(
+            await dataCache.updateDailyData(
                 for: profile.id,
                 sleep: sleep,
                 readiness: readiness,
@@ -238,16 +259,14 @@ class AppState {
             )
         } catch {
             print("Failed to load daily data: \(error)")
-            await MainActor.run {
-                errorMessage = "Failed to sync daily data"
-            }
+            errorMessage = "Failed to sync daily data"
         }
     }
     
     private func loadHeartRateData(for profile: UserProfile) async {
         do {
             let heartRate = try await OuraAPIService.shared.getHeartRate(token: profile.token)
-            dataCache.updateHeartRateData(for: profile.id, heartRate: heartRate)
+            await dataCache.updateHeartRateData(for: profile.id, heartRate: heartRate)
         } catch {
             print("Failed to load heart rate data: \(error)")
         }
@@ -256,7 +275,7 @@ class AppState {
     private func loadSpo2Data(for profile: UserProfile) async {
         do {
             let spo2 = try await OuraAPIService.shared.getDailySpO2(token: profile.token)
-            dataCache.updateSpo2Data(for: profile.id, spo2: spo2)
+            await dataCache.updateSpo2Data(for: profile.id, spo2: spo2)
         } catch {
             print("Failed to load SpO2 data: \(error)")
         }
@@ -267,7 +286,11 @@ class AppState {
     func removeProfile(id: String) {
         localStorage.deleteProfile(id: id)
         profiles = localStorage.profiles
-        dataCache.removeData(for: id)
+        localCache.removeValue(forKey: id)
+        Task {
+            await dataCache.removeData(for: id)
+            await PersistenceService.shared.deleteProfileData(for: id)
+        }
         
         if activeProfileId == id {
             activeProfileId = profiles.first?.id
@@ -414,12 +437,12 @@ class AppState {
     var leaderboardData: [LeaderboardEntry] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        let todayKey = dateFormatter.string(from: today)
+        // Use static formatter instead of creating new instance
+        let todayKey = Formatters.dayKeyString(from: today)
         
         return profiles.compactMap { profile -> LeaderboardEntry? in
-            guard let data = dataCache.getData(for: profile.id),
+            // Use localCache for synchronous view access
+            guard let data = localCache[profile.id],
                   let dayData = data.getDayData(for: todayKey) else { return nil }
             
             let sScore = dayData.sleep?.score ?? 0
@@ -454,8 +477,9 @@ class AppState {
         let p1 = profiles[0]
         let p2 = profiles[1]
         
-        guard let data1 = dataCache.getData(for: p1.id),
-              let data2 = dataCache.getData(for: p2.id),
+        // Use localCache for synchronous access
+        guard let data1 = localCache[p1.id],
+              let data2 = localCache[p2.id],
               let day1 = data1.getDayData(for: currentDateKey),
               let day2 = data2.getDayData(for: currentDateKey) else { return }
         
@@ -476,7 +500,8 @@ class AppState {
     // MARK: - Stats Access
     
     func getDailyStats(for profileId: String) -> DailyStats? {
-        dataCache.getData(for: profileId)?.toDailyStats()
+        // Use localCache for synchronous access
+        localCache[profileId]?.toDailyStats()
     }
     
     // MARK: - Haptic Feedback
@@ -541,9 +566,9 @@ struct LoadingState {
     var progress: Double?
 }
 
-// MARK: - Data Cache
+// MARK: - Data Cache (Actor for thread safety)
 
-private class DataCache {
+private actor DataCache {
     private var cache: [String: ProfileData] = [:]
     private var lastSync: [String: Date] = [:]
     
@@ -586,6 +611,44 @@ private class DataCache {
     func setLastSync(for profileId: String, date: Date) {
         lastSync[profileId] = date
     }
+    
+    // MARK: - Persistence Integration
+    
+    /// Load cached data from disk for a profile
+    func loadFromDisk(for profileId: String) async {
+        guard let codableData = await PersistenceService.shared.loadProfileData(for: profileId) else {
+            return
+        }
+        
+        // Convert CodableProfileData to ProfileData
+        let profileData = ProfileData()
+        for (dayKey, codableDay) in codableData.dayDataMap {
+            var dayData = DayData()
+            dayData.sleep = codableDay.sleep
+            dayData.readiness = codableDay.readiness
+            dayData.activity = codableDay.activity
+            dayData.session = codableDay.session
+            dayData.spo2 = codableDay.spo2
+            dayData.heartRate = codableDay.heartRate
+            profileData.setDayData(dayData, for: dayKey)
+        }
+        
+        cache[profileId] = profileData
+        lastSync[profileId] = codableData.lastSyncDate
+    }
+    
+    /// Save current cache to disk for a profile
+    func saveToDisk(for profileId: String) async {
+        guard let profileData = cache[profileId] else { return }
+        
+        let codableData = profileData.toCodableProfileData(lastSync: lastSync[profileId])
+        
+        do {
+            try await PersistenceService.shared.saveProfileData(codableData, for: profileId)
+        } catch {
+            print("Failed to persist profile data: \(error)")
+        }
+    }
 }
 
 // MARK: - Profile Data
@@ -594,13 +657,16 @@ class ProfileData {
     private var dayDataMap: [String: DayData] = [:]
     
     var availableDates: [Date] {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return dayDataMap.keys.compactMap { formatter.date(from: $0) }
+        // Use static formatter instead of creating new instance
+        dayDataMap.keys.compactMap { Formatters.date(fromDayKey: $0) }
     }
     
     func getDayData(for dateKey: String) -> DayData? {
         dayDataMap[dateKey]
+    }
+    
+    func setDayData(_ data: DayData, for dateKey: String) {
+        dayDataMap[dateKey] = data
     }
     
     func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness], 
@@ -639,12 +705,10 @@ class ProfileData {
     }
     
     func updateHeartRateData(heartRate: [HeartRate]) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        
+        // Use static formatter instead of creating new instance
         // Group heart rate by day
         let grouped = Dictionary(grouping: heartRate) { hr in
-            formatter.string(from: hr.date)
+            Formatters.dayKeyString(from: hr.date)
         }
         
         for (dateKey, hrData) in grouped {
@@ -705,6 +769,22 @@ class ProfileData {
             stress: [],
             resilience: []
         )
+    }
+    
+    /// Convert to Codable format for persistence
+    func toCodableProfileData(lastSync: Date?) -> CodableProfileData {
+        var codableDays: [String: CodableDayData] = [:]
+        for (key, day) in dayDataMap {
+            codableDays[key] = CodableDayData(
+                sleep: day.sleep,
+                readiness: day.readiness,
+                activity: day.activity,
+                session: day.session,
+                spo2: day.spo2,
+                heartRate: day.heartRate
+            )
+        }
+        return CodableProfileData(dayDataMap: codableDays, lastSyncDate: lastSync)
     }
 }
 

@@ -17,15 +17,13 @@ final class OuraAPIService: Sendable {
             return ("", "")
         }
         
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return (formatter.string(from: pastDate), formatter.string(from: today))
+        // Use static formatter to avoid expensive allocations
+        return (Formatters.dayKeyString(from: pastDate), Formatters.dayKeyString(from: today))
     }
     
     private func getDateRange(start: String, end: String? = nil) -> (start: String, end: String) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        let endDate = end ?? formatter.string(from: Date())
+        // Use static formatter to avoid expensive allocations
+        let endDate = end ?? Formatters.dayKeyString(from: Date())
         return (start, endDate)
     }
     
@@ -127,6 +125,13 @@ final class OuraAPIService: Sendable {
             
             allData.append(contentsOf: response.data)
             nextToken = response.nextToken
+            
+            // Safety: break if API returns empty data with a nextToken (known API quirk)
+            // This prevents potential infinite loops
+            if response.data.isEmpty && nextToken != nil {
+                print("Warning: Empty data with nextToken - breaking pagination loop")
+                break
+            }
         } while nextToken != nil
         
         return allData
@@ -177,7 +182,7 @@ final class OuraAPIService: Sendable {
             biologicalSex: info.biologicalSex,
             email: info.email,
             token: token,
-            lastUpdated: ISO8601DateFormatter().string(from: Date())
+            lastUpdated: Formatters.iso8601.string(from: Date())
         )
     }
     

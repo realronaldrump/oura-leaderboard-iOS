@@ -94,9 +94,8 @@ private struct DateNavigator: View {
     }
     
     private func formatDateDisplay(_ day: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: day) else { return day }
+        // Use static formatter instead of creating new instance each time
+        guard let date = Formatters.date(fromDayKey: day) else { return day }
         
         let today = Calendar.current.startOfDay(for: Date())
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today)!
@@ -107,8 +106,7 @@ private struct DateNavigator: View {
         } else if dateDay == yesterday {
             return "Yesterday"
         } else {
-            formatter.dateFormat = "EEEE, MMM d"
-            return formatter.string(from: date)
+            return Formatters.displayDate.string(from: date)
         }
     }
 }

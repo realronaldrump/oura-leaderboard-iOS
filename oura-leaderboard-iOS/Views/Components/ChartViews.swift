@@ -11,17 +11,13 @@ struct HeartRateChartView: View {
     private var chartData: [HeartRatePoint] {
         let now = Date()
         let twentyFourHoursAgo = now.addingTimeInterval(-24 * 60 * 60)
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         
+        // Use pre-parsed hr.date property (parsed once using static formatter)
+        // instead of parsing timestamps here on every view refresh
         return data.compactMap { hr -> HeartRatePoint? in
-            var date = formatter.date(from: hr.timestamp)
-            if date == nil {
-                formatter.formatOptions = [.withInternetDateTime]
-                date = formatter.date(from: hr.timestamp)
-            }
-            guard let parsedDate = date, parsedDate >= twentyFourHoursAgo else { return nil }
-            return HeartRatePoint(date: parsedDate, bpm: hr.bpm, source: hr.source)
+            // hr.date uses the static Formatters.heartRateTimestamp formatter
+            guard hr.date >= twentyFourHoursAgo else { return nil }
+            return HeartRatePoint(date: hr.date, bpm: hr.bpm, source: hr.source)
         }.sorted { $0.date < $1.date }
     }
     
