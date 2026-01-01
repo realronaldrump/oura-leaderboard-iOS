@@ -653,7 +653,7 @@ private actor DataCache {
 
 // MARK: - Profile Data
 
-class ProfileData {
+struct ProfileData {
     private var dayDataMap: [String: DayData] = [:]
     
     var availableDates: [Date] {
@@ -665,11 +665,11 @@ class ProfileData {
         dayDataMap[dateKey]
     }
     
-    func setDayData(_ data: DayData, for dateKey: String) {
+    mutating func setDayData(_ data: DayData, for dateKey: String) {
         dayDataMap[dateKey] = data
     }
     
-    func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness], 
+    mutating func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness], 
                         activity: [DailyActivity], sessions: [SleepSession]) {
         // Update sleep data
         for item in sleep {
@@ -704,7 +704,7 @@ class ProfileData {
         }
     }
     
-    func updateHeartRateData(heartRate: [HeartRate]) {
+    mutating func updateHeartRateData(heartRate: [HeartRate]) {
         // Use static formatter instead of creating new instance
         // Group heart rate by day
         let grouped = Dictionary(grouping: heartRate) { hr in
@@ -719,7 +719,7 @@ class ProfileData {
         }
     }
     
-    func updateSpo2Data(spo2: [DailySpO2]) {
+    mutating func updateSpo2Data(spo2: [DailySpO2]) {
         for item in spo2 {
             if dayDataMap[item.day] == nil {
                 dayDataMap[item.day] = DayData()

@@ -243,7 +243,7 @@ struct HeartRate: Codable, Identifiable, Sendable {
 extension HeartRate {
     /// Pre-computed date from timestamp using static formatter (no repeated allocations)
     var date: Date {
-        Formatters.heartRateTimestamp.date(from: timestamp) ?? Date()
+        Formatters.parseISO8601(timestamp) ?? Date()
     }
 }
 
