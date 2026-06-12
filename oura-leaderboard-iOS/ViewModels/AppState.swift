@@ -34,11 +34,9 @@ class AppState {
     
     // MARK: - UI State
     var authStatus: AuthStatus = .unauthenticated
-    var viewMode: ViewMode = .daily
     var selectedDate = Date() // Using actual Date instead of index
     var errorMessage: String?
     var lastSyncAt: Date?
-    var syncMessage: String?
     
     // MARK: - All-Time Stats Storage
     var allTimeStats: [String: DailyStats] = [:]
@@ -51,18 +49,7 @@ class AppState {
     var isSyncing: Bool {
         loadingStates.values.contains { $0.isLoading }
     }
-    
-    // MARK: - Daily Stats (computed from local cache mirror)
-    var dailyStats: [String: DailyStats] {
-        var result: [String: DailyStats] = [:]
-        for profile in profiles {
-            if let data = localCache[profile.id] {
-                result[profile.id] = data.toDailyStats()
-            }
-        }
-        return result
-    }
-    
+
     // MARK: - AI State
     var aiBriefing: String?
     var isGeneratingBriefing = false
@@ -72,23 +59,30 @@ class AppState {
     private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Initialization
-    
+
     init() {
         // Load saved profile ID
         activeProfileId = UserDefaults.standard.string(forKey: "active_profile_id")
-        
+
         // Load profiles from local storage
         profiles = localStorage.profiles
-        
+
         // Setup data refresh timer
         setupAutoRefresh()
-        
-        // Load cached data from disk for instant UI (async)
-        Task {
-            await loadCachedDataFromDisk()
-        }
     }
-    
+
+    private var didBootstrap = false
+
+    /// Load disk cache for instant UI, then refresh any stale profiles from the
+    /// network. Called once from the root view's `.task`.
+    func bootstrap() async {
+        guard !didBootstrap else { return }
+        didBootstrap = true
+
+        await loadCachedDataFromDisk()
+        await loadAllProfilesData()
+    }
+
     /// Load all profile data from disk cache for instant UI on app launch
     private func loadCachedDataFromDisk() async {
         for profile in profiles {
@@ -139,10 +133,6 @@ class AppState {
     var currentHeartRate: [HeartRate] {
         currentDayData?.heartRate ?? []
     }
-
-    var activeHeartRate: [HeartRate] {
-        currentHeartRate
-    }
     
     // MARK: - Authentication
     
@@ -182,7 +172,7 @@ class AppState {
                 biologicalSex: profile.biologicalSex,
                 email: profile.email,
                 token: token,
-                lastUpdated: ISO8601DateFormatter().string(from: Date()),
+                lastUpdated: Formatters.iso8601.string(from: Date()),
                 firstName: existingProfile.firstName,
                 lastName: existingProfile.lastName
             )
@@ -310,46 +300,62 @@ class AppState {
     }
     
     // MARK: - Date Navigation
-    
+
+    /// Dates with data for the active profile, sorted newest first.
+    /// (Pre-sorted in ProfileData - no per-access sorting.)
     var availableDates: [Date] {
-        guard let stats = activeStats else { return [] }
-        return stats.availableDates.sorted(by: >)
+        activeStats?.availableDates ?? []
     }
-    
+
+    private func selectedDateIndex(in dates: [Date]) -> Int? {
+        dates.firstIndex { Calendar.current.isDate($0, inSameDayAs: selectedDate) }
+    }
+
     var canGoBack: Bool {
-        guard let currentIndex = availableDates.firstIndex(where: { 
-            Calendar.current.isDate($0, inSameDayAs: selectedDate)
-        }) else { return false }
-        return currentIndex < availableDates.count - 1
+        let dates = availableDates
+        if let index = selectedDateIndex(in: dates) {
+            return index < dates.count - 1
+        }
+        // Selected day has no data (e.g., today before first sync):
+        // allow navigating back to the most recent earlier day with data.
+        return dates.contains { $0 < selectedDate }
     }
-    
+
     var canGoForward: Bool {
-        guard let currentIndex = availableDates.firstIndex(where: { 
-            Calendar.current.isDate($0, inSameDayAs: selectedDate)
-        }) else { return false }
-        return currentIndex > 0
+        let dates = availableDates
+        if let index = selectedDateIndex(in: dates) {
+            return index > 0
+        }
+        return dates.contains { $0 > selectedDate }
     }
-    
+
     func goToPreviousDay() {
-        guard canGoBack,
-              let currentIndex = availableDates.firstIndex(where: { 
-                  Calendar.current.isDate($0, inSameDayAs: selectedDate)
-              }) else { return }
-        
-        selectedDate = availableDates[currentIndex + 1]
+        let dates = availableDates
+        if let index = selectedDateIndex(in: dates) {
+            guard index < dates.count - 1 else { return }
+            selectedDate = dates[index + 1]
+        } else if let earlier = dates.first(where: { $0 < selectedDate }) {
+            // Sorted newest first, so the first earlier date is the closest one
+            selectedDate = earlier
+        } else {
+            return
+        }
         provideHapticFeedback(.selection)
     }
-    
+
     func goToNextDay() {
-        guard canGoForward,
-              let currentIndex = availableDates.firstIndex(where: { 
-                  Calendar.current.isDate($0, inSameDayAs: selectedDate)
-              }) else { return }
-        
-        selectedDate = availableDates[currentIndex - 1]
+        let dates = availableDates
+        if let index = selectedDateIndex(in: dates) {
+            guard index > 0 else { return }
+            selectedDate = dates[index - 1]
+        } else if let later = dates.last(where: { $0 > selectedDate }) {
+            selectedDate = later
+        } else {
+            return
+        }
         provideHapticFeedback(.selection)
     }
-    
+
     func goToToday() {
         selectedDate = Date()
         provideHapticFeedback(.selection)
@@ -363,21 +369,30 @@ class AppState {
     }
     
     func refreshAllProfiles() async {
+        await loadAllProfilesData(forceRefresh: true)
+    }
+
+    /// Load data for every profile. Non-forced loads respect the 5-minute
+    /// sync window, so this is cheap to call on appear.
+    func loadAllProfilesData(forceRefresh: Bool = false) async {
         await withTaskGroup(of: Void.self) { group in
             for profile in profiles {
                 group.addTask { [weak self] in
-                    await self?.loadDataForProfile(profile, forceRefresh: true)
+                    await self?.loadDataForProfile(profile, forceRefresh: forceRefresh)
                 }
             }
         }
     }
-    
-    func loadAllProfilesData() async {
-        await refreshAllProfiles()
-    }
-    
+
     // MARK: - All-Time Stats Loading
-    
+
+    /// Load extended history for all profiles (sequential to stay under API rate limits)
+    func loadAllTimeStats() async {
+        for profile in profiles {
+            await loadAllTimeStats(for: profile)
+        }
+    }
+
     func loadAllTimeStats(for profile: UserProfile) async {
         do {
             // Fetch extended history (e.g., all available data)
@@ -409,16 +424,6 @@ class AppState {
         }
     }
     
-    // MARK: - Logout
-    
-    func logout() {
-        // Remove active profile and clear data
-        if let activeId = activeProfileId {
-            removeProfile(id: activeId)
-        }
-        authStatus = .unauthenticated
-    }
-    
     // MARK: - Auto Refresh
     
     private func setupAutoRefresh() {
@@ -433,17 +438,15 @@ class AppState {
     }
     
     // MARK: - Leaderboard
-    
+
+    /// Standings for the currently selected day (follows date navigation).
     var leaderboardData: [LeaderboardEntry] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        // Use static formatter instead of creating new instance
-        let todayKey = Formatters.dayKeyString(from: today)
-        
+        let dateKey = currentDateKey
+
         return profiles.compactMap { profile -> LeaderboardEntry? in
             // Use localCache for synchronous view access
             guard let data = localCache[profile.id],
-                  let dayData = data.getDayData(for: todayKey) else { return nil }
+                  let dayData = data.getDayData(for: dateKey) else { return nil }
             
             let sScore = dayData.sleep?.score ?? 0
             let rScore = dayData.readiness?.score ?? 0
@@ -619,9 +622,10 @@ private actor DataCache {
         guard let codableData = await PersistenceService.shared.loadProfileData(for: profileId) else {
             return
         }
-        
-        // Convert CodableProfileData to ProfileData
-        var profileData = ProfileData()
+
+        // Convert CodableProfileData to ProfileData in one pass
+        var dayMap: [String: DayData] = [:]
+        dayMap.reserveCapacity(codableData.dayDataMap.count)
         for (dayKey, codableDay) in codableData.dayDataMap {
             var dayData = DayData()
             dayData.sleep = codableDay.sleep
@@ -630,10 +634,10 @@ private actor DataCache {
             dayData.session = codableDay.session
             dayData.spo2 = codableDay.spo2
             dayData.heartRate = codableDay.heartRate
-            profileData.setDayData(dayData, for: dayKey)
+            dayMap[dayKey] = dayData
         }
-        
-        cache[profileId] = profileData
+
+        cache[profileId] = ProfileData(dayDataMap: dayMap)
         lastSync[profileId] = codableData.lastSyncDate
     }
     

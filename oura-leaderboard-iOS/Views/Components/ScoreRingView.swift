@@ -10,9 +10,8 @@ struct ScoreRingView: View {
     var showGlow: Bool = true
     var animated: Bool = true
     
-    @State private var displayedScore: Int = 0
     @State private var animationProgress: CGFloat = 0
-    
+
     private var displayScore: Int { score ?? 0 }
     private var strokeWidth: CGFloat { size * 0.06 }
     private var radius: CGFloat { (size - strokeWidth * 2) / 2 }
@@ -54,13 +53,15 @@ struct ScoreRingView: View {
                     .shadow(color: showGlow ? color.opacity(0.5) : .clear, radius: 10)
                 
                 // Score text
-                Text(score != nil ? "\(displayedScore)" : "--")
+                Text(score != nil ? "\(displayScore)" : "--")
                     .font(.system(size: size * 0.28, weight: .bold, design: .monospaced))
                     .foregroundStyle(Theme.textPrimary)
+                    .contentTransition(.numericText())
+                    .animation(.easeOut(duration: 0.6), value: displayScore)
                     .shadow(color: showGlow ? color.opacity(0.6) : .clear, radius: 20)
             }
             .frame(width: size, height: size)
-            
+
             // Label
             Text(label.uppercased())
                 .font(.system(size: 11, weight: .semibold))
@@ -68,46 +69,20 @@ struct ScoreRingView: View {
                 .foregroundStyle(Theme.textMuted)
         }
         .onAppear {
-            if animated {
-                animateScore()
-            } else {
-                displayedScore = displayScore
-                animationProgress = CGFloat(displayScore) / 100
-            }
+            updateProgress()
         }
         .onChange(of: score) { _, _ in
-            if animated {
-                animateScore()
-            } else {
-                displayedScore = displayScore
-                animationProgress = CGFloat(displayScore) / 100
-            }
+            updateProgress()
         }
     }
-    
-    private func animateScore() {
-        displayedScore = 0
-        animationProgress = 0
-        
-        withAnimation(.easeOut(duration: 1.2)) {
-            animationProgress = CGFloat(displayScore) / 100
-        }
-        
-        // Counter animation
-        let duration: Double = 1.2
-        let steps = 60
-        let stepDuration = duration / Double(steps)
-        let increment = Double(displayScore) / Double(steps)
-        var current: Double = 0
-        
-        Timer.scheduledTimer(withTimeInterval: stepDuration, repeats: true) { timer in
-            current += increment
-            if current >= Double(displayScore) {
-                displayedScore = displayScore
-                timer.invalidate()
-            } else {
-                displayedScore = Int(current)
+
+    private func updateProgress() {
+        if animated {
+            withAnimation(.easeOut(duration: 1.2)) {
+                animationProgress = CGFloat(displayScore) / 100
             }
+        } else {
+            animationProgress = CGFloat(displayScore) / 100
         }
     }
 }

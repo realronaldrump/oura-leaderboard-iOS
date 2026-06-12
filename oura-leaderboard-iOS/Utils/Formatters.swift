@@ -48,14 +48,26 @@ enum Formatters {
         formatter.dateFormat = "EEEE, MMM d"
         return formatter
     }()
-    
-    // MARK: - Heart Rate Timestamp Formatter
-    
-    /// Parses heart rate timestamps in format "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
-    static let heartRateTimestamp: DateFormatter = {
+
+    /// Formats date as "MMM d, yyyy" (e.g., "Jan 1, 2026")
+    static let displayDateMedium: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
+
+    /// Relative time formatter (e.g., "2 min ago")
+    static let relativeTime: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    /// Decimal number formatter with grouping (e.g., "8,432").
+    /// Only access from the main thread (NumberFormatter is not thread-safe).
+    static let decimal: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
         return formatter
     }()
     
@@ -77,5 +89,10 @@ enum Formatters {
     /// Parse a day key string to Date
     static func date(fromDayKey string: String) -> Date? {
         dayKey.date(from: string)
+    }
+
+    /// Format an integer with grouping separators (e.g., "8,432")
+    static func decimalString(from value: Int) -> String {
+        decimal.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 }

@@ -1,71 +1,59 @@
 import SwiftUI
+import Charts
 
 // MARK: - Enhanced Daily Content View
+// Content-only view: scrolling and pull-to-refresh are owned by the parent
+// dashboard's ScrollView (nesting two scroll views breaks both).
 
 struct EnhancedDailyContentView: View {
     @Environment(AppState.self) private var appState
-    @State private var refreshTask: Task<Void, Never>?
-    
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                // Pull to refresh indicator
-                RefreshControl()
-                
-                if appState.activeStats == nil {
-                    LoadingView()
-                        .padding(.top, 100)
-                } else {
-                    LazyVStack(spacing: 24) {
-                        // Date Navigation
-                        EnhancedDateNavigator()
-                            .padding(.top, 12)
-                        
-                        // Main Scores
-                        EnhancedMainScoresSection()
-                        
-                        // Sleep Details
-                        EnhancedSleepDetailsSection()
-                        
-                        // Heart Rate & HRV
-                        EnhancedHeartRateSection()
-                        
-                        // Activity Details
-                        EnhancedActivityDetailsSection()
-                        
-                        // Score Contributors
-                        EnhancedScoreContributorsSection()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
+        if appState.activeStats == nil {
+            LoadingView()
+                .padding(.top, 40)
+        } else {
+            LazyVStack(spacing: 24) {
+                // Date Navigation
+                EnhancedDateNavigator()
+
+                // Standings (the leaderboard!) when comparing multiple people
+                if appState.profiles.count > 1 {
+                    DailyLeaderboardCard()
                 }
+
+                // Main Scores
+                EnhancedMainScoresSection()
+
+                // Sleep Details
+                EnhancedSleepDetailsSection()
+
+                // Heart Rate & HRV
+                EnhancedHeartRateSection()
+
+                // Activity Details
+                EnhancedActivityDetailsSection()
+
+                // Score Contributors
+                EnhancedScoreContributorsSection()
             }
         }
-        .refreshable {
-            await refreshData()
-        }
-        .scrollIndicators(.hidden)
-    }
-    
-    private func refreshData() async {
-        appState.provideHapticFeedback(.light)
-        await appState.refreshActiveProfile()
-        appState.provideHapticFeedback(.success)
     }
 }
 
 // MARK: - Loading View
 
 private struct LoadingView: View {
+    @Environment(AppState.self) private var appState
     @State private var rotation: Double = 0
-    
+
     var body: some View {
         VStack(spacing: 16) {
             ZStack {
                 Circle()
                     .stroke(Theme.bgRaised, lineWidth: 3)
                     .frame(width: 50, height: 50)
-                
+
                 Circle()
                     .trim(from: 0, to: 0.7)
                     .stroke(
@@ -80,14 +68,25 @@ private struct LoadingView: View {
                     .rotationEffect(.degrees(rotation))
                     .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: rotation)
             }
-            
+
             Text("Syncing your data")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-            
+
             Text("This usually takes a few seconds")
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.textMuted)
+
+            if !appState.isSyncing {
+                Button("Retry Sync") {
+                    Task {
+                        await appState.refreshActiveProfile()
+                    }
+                }
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.accentCyan)
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(32)
@@ -98,39 +97,110 @@ private struct LoadingView: View {
     }
 }
 
-// MARK: - Refresh Control
+// MARK: - Daily Leaderboard
 
-private struct RefreshControl: View {
-    @State private var refreshProgress: CGFloat = 0
-    
+private struct DailyLeaderboardCard: View {
+    @Environment(AppState.self) private var appState
+
     var body: some View {
-        GeometryReader { geometry in
-            let pullProgress = min(max(0, geometry.frame(in: .global).minY - 100) / 100, 1)
-            
-            ZStack {
-                Circle()
-                    .stroke(Theme.bgRaised, lineWidth: 2)
-                    .frame(width: 30, height: 30)
-                    .opacity(pullProgress)
-                
-                Circle()
-                    .trim(from: 0, to: pullProgress * 0.8)
-                    .stroke(Theme.accentCyan, lineWidth: 2)
-                    .frame(width: 30, height: 30)
-                    .rotationEffect(.degrees(-90))
-                    .opacity(pullProgress)
+        let entries = appState.leaderboardData
+
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.accentOrange)
+
+                Text("STANDINGS")
+                    .font(.system(size: 12, weight: .semibold))
+                    .tracking(1)
+                    .foregroundStyle(Theme.textMuted)
+
+                Spacer()
             }
-            .scaleEffect(0.8 + (0.2 * pullProgress))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 20)
-            .onChange(of: pullProgress) { _, newValue in
-                if newValue > 0.1 && newValue < 0.2 {
-                    let generator = UIImpactFeedbackGenerator(style: .light)
-                    generator.impactOccurred()
+
+            if entries.isEmpty {
+                Text("No scores for this day yet. Pull to refresh.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+            } else {
+                // Column headers aligned with the row layout below
+                HStack(spacing: 12) {
+                    Spacer()
+                    Text("RDY").frame(width: 32, alignment: .trailing)
+                    Text("SLP").frame(width: 32, alignment: .trailing)
+                    Text("ACT").frame(width: 32, alignment: .trailing)
+                    Text("AVG").frame(width: 36, alignment: .trailing)
+                }
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 12)
+
+                VStack(spacing: 8) {
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        DailyLeaderboardRow(entry: entry, rank: index + 1)
+                    }
                 }
             }
         }
-        .frame(height: 0)
+        .padding(20)
+        .glassCard()
+    }
+}
+
+private struct DailyLeaderboardRow: View {
+    let entry: LeaderboardEntry
+    let rank: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(rankColor)
+                    .frame(width: 26, height: 26)
+                Text("\(rank)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(rank <= 3 ? Color.black : Theme.textSecondary)
+            }
+
+            Text(entry.name)
+                .font(.system(size: 14, weight: entry.isCurrentUser ? .semibold : .regular))
+                .foregroundStyle(entry.isCurrentUser ? Theme.accentCyan : Theme.textPrimary)
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            scoreText(entry.readiness, color: Theme.readinessColor)
+            scoreText(entry.sleep, color: Theme.sleepColor)
+            scoreText(entry.activity, color: Theme.activityColor)
+
+            Text("\(entry.average)")
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(entry.isCurrentUser ? Theme.accentCyan.opacity(0.08) : Theme.bgRaised.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func scoreText(_ value: Int, color: Color) -> some View {
+        Text(value > 0 ? "\(value)" : "--")
+            .font(.system(size: 13, weight: .medium, design: .monospaced))
+            .foregroundStyle(color)
+            .frame(width: 32, alignment: .trailing)
+    }
+
+    private var rankColor: Color {
+        switch rank {
+        case 1: return Color.yellow
+        case 2: return Color.gray
+        case 3: return Color.orange
+        default: return Theme.bgElevated
+        }
     }
 }
 
@@ -139,24 +209,18 @@ private struct RefreshControl: View {
 private struct EnhancedDateNavigator: View {
     @Environment(AppState.self) private var appState
     @State private var showingDatePicker = false
-    
+
     private var currentDate: String {
-        let formatter = DateFormatter()
-        
-        let today = Calendar.current.startOfDay(for: Date())
-        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today)!
-        let selectedDay = Calendar.current.startOfDay(for: appState.selectedDate)
-        
-        if selectedDay == today {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(appState.selectedDate) {
             return "Today"
-        } else if selectedDay == yesterday {
+        } else if calendar.isDateInYesterday(appState.selectedDate) {
             return "Yesterday"
         } else {
-            formatter.dateFormat = "EEEE, MMM d"
-            return formatter.string(from: appState.selectedDate)
+            return Formatters.displayDate.string(from: appState.selectedDate)
         }
     }
-    
+
     var body: some View {
         HStack {
             Button {
@@ -170,40 +234,34 @@ private struct EnhancedDateNavigator: View {
                     .frame(width: 44, height: 44)
                     .background(Theme.bgRaised)
                     .clipShape(Circle())
-                    .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 2)
             }
             .disabled(!appState.canGoBack)
-            .scaleEffect(appState.canGoBack ? 1 : 0.9)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: appState.canGoBack)
-            
+            .accessibilityLabel("Previous day")
+
             Spacer()
-            
+
             Button {
                 showingDatePicker.toggle()
                 appState.provideHapticFeedback(.light)
             } label: {
-                VStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textMuted)
+
                     Text(currentDate)
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
-                    
-                    if Calendar.current.isDateInToday(appState.selectedDate) {
-                        Text("TAP FOR CALENDAR")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Theme.textMuted)
-                            .tracking(0.5)
-                    }
                 }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 8)
+                .padding(.vertical, 10)
                 .background(Theme.bgRaised.opacity(0.5))
                 .clipShape(Capsule())
             }
-            .scaleEffect(showingDatePicker ? 0.95 : 1)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showingDatePicker)
-            
+            .accessibilityLabel("Choose date")
+
             Spacer()
-            
+
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     appState.goToNextDay()
@@ -215,11 +273,9 @@ private struct EnhancedDateNavigator: View {
                     .frame(width: 44, height: 44)
                     .background(Theme.bgRaised)
                     .clipShape(Circle())
-                    .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 2)
             }
             .disabled(!appState.canGoForward)
-            .scaleEffect(appState.canGoForward ? 1 : 0.9)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: appState.canGoForward)
+            .accessibilityLabel("Next day")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -240,15 +296,15 @@ private struct DatePickerSheet: View {
     @Binding var selectedDate: Date
     let availableDates: [Date]
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         NavigationView {
             VStack {
                 DatePicker("Select Date", selection: $selectedDate, in: dateRange, displayedComponents: .date)
                     .datePickerStyle(.graphical)
-                    .accentColor(Theme.accentCyan)
+                    .tint(Theme.accentCyan)
                     .padding()
-                
+
                 Spacer()
             }
             .background(Theme.bgBase)
@@ -263,12 +319,16 @@ private struct DatePickerSheet: View {
                 }
             }
         }
+        .onChange(of: selectedDate) { _, _ in
+            // Picking a day is the final action - close the sheet
+            dismiss()
+        }
     }
-    
+
     private var dateRange: ClosedRange<Date> {
-        let sortedDates = availableDates.sorted()
-        let start = sortedDates.first ?? Date()
-        let end = sortedDates.last ?? Date()
+        // availableDates is sorted newest first
+        let start = availableDates.last ?? Date()
+        let end = max(availableDates.first ?? Date(), Date())
         return start...end
     }
 }
@@ -332,18 +392,15 @@ private struct EnhancedMainScoresSection: View {
             return appState.currentActivity?.score
         }
     }
-    
+
+    /// Last 7 days of scores in chronological order (oldest -> newest)
     private func trend(for type: ScoreType) -> [Int] {
         guard let stats = appState.activeStats else { return [] }
-        let dates = Array(stats.availableDates.sorted(by: >).prefix(7))
-        
-        return dates.compactMap { date in
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            let dateKey = formatter.string(from: date)
-            
+        // availableDates is sorted newest first; reverse for left-to-right time
+        return stats.availableDates.prefix(7).reversed().compactMap { date in
+            let dateKey = Formatters.dayKeyString(from: date)
             guard let dayData = stats.getDayData(for: dateKey) else { return nil }
-            
+
             switch type {
             case .readiness:
                 return dayData.readiness?.score
@@ -393,9 +450,9 @@ private struct ScoreCard: View {
                     .rotationEffect(.degrees(-90))
                     .animation(.spring(response: 0.5, dampingFraction: 0.8), value: score)
                 
-                Text("\(score ?? 0)")
+                Text(score != nil ? "\(score!)" : "--")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(Theme.textPrimary)
+                    .foregroundStyle(score != nil ? Theme.textPrimary : Theme.textMuted)
             }
             .scaleEffect(isSelected ? 1.1 : 1)
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
@@ -425,19 +482,21 @@ private struct MiniTrendView: View {
     var body: some View {
         GeometryReader { geometry in
             Path { path in
-                guard !data.isEmpty else { return }
-                
+                // Need at least 2 points for a line; also guards divide-by-zero below
+                guard data.count > 1 else { return }
+
                 let width = geometry.size.width
                 let height = geometry.size.height
                 let maxValue = data.max() ?? 100
                 let minValue = data.min() ?? 0
-                let range = maxValue - minValue
-                
+                // Avoid NaN when all values are equal
+                let range = Swift.max(maxValue - minValue, 1)
+
                 for (index, value) in data.enumerated() {
                     let x = width * CGFloat(index) / CGFloat(data.count - 1)
                     let normalizedValue = CGFloat(value - minValue) / CGFloat(range)
                     let y = height * (1 - normalizedValue)
-                    
+
                     if index == 0 {
                         path.move(to: CGPoint(x: x, y: y))
                     } else {
@@ -455,22 +514,95 @@ private struct MiniTrendView: View {
 private struct ScoreTrendChart: View {
     let type: EnhancedMainScoresSection.ScoreType
     @Environment(AppState.self) private var appState
-    
+
+    private struct TrendPoint: Identifiable {
+        let id: String
+        let date: Date
+        let score: Int
+    }
+
+    private var color: Color {
+        switch type {
+        case .readiness: return Theme.readinessColor
+        case .sleep: return Theme.sleepColor
+        case .activity: return Theme.activityColor
+        }
+    }
+
+    /// Last 14 days in chronological order
+    private var points: [TrendPoint] {
+        guard let stats = appState.activeStats else { return [] }
+        return stats.availableDates.prefix(14).reversed().compactMap { date in
+            let key = Formatters.dayKeyString(from: date)
+            guard let dayData = stats.getDayData(for: key) else { return nil }
+
+            let score: Int?
+            switch type {
+            case .readiness: score = dayData.readiness?.score
+            case .sleep: score = dayData.sleep?.score
+            case .activity: score = dayData.activity?.score
+            }
+
+            guard let score else { return nil }
+            return TrendPoint(id: key, date: date, score: score)
+        }
+    }
+
     var body: some View {
+        let points = points
+
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(type.rawValue) Trend")
+            Text("\(type.rawValue) — Last 14 Days")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-            
-            // Chart implementation here
-            Rectangle()
-                .fill(Theme.bgRaised)
-                .frame(height: 120)
-                .overlay(
-                    Text("7-day trend chart")
-                        .foregroundStyle(Theme.textMuted)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            if points.count < 2 {
+                Text("Not enough data yet")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(maxWidth: .infinity, minHeight: 80)
+            } else {
+                Chart(points) { point in
+                    AreaMark(
+                        x: .value("Date", point.date),
+                        y: .value("Score", point.score)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [color.opacity(0.3), color.opacity(0)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .interpolationMethod(.catmullRom)
+
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Score", point.score)
+                    )
+                    .foregroundStyle(color)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    .interpolationMethod(.catmullRom)
+                }
+                .chartYScale(domain: 0...100)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Theme.borderSubtle)
+                        AxisValueLabel(format: .dateTime.month().day())
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks { _ in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Theme.borderSubtle)
+                        AxisValueLabel()
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                }
+                .frame(height: 140)
+            }
         }
         .padding(.top, 12)
     }
@@ -572,8 +704,14 @@ private struct EnhancedSleepDetailsSection: View {
                     }
                     
                     // Sleep stages visualization
-                    if session != nil {
-                        SleepStagesVisualization(session: session!)
+                    if let session {
+                        SleepStagesVisualization(session: session)
+                            .padding(.top, 8)
+                    }
+
+                    // 14-day sleep architecture trend
+                    if let stats = appState.activeStats, !stats.session.isEmpty {
+                        SleepStagesChartView(sessions: stats.session)
                             .padding(.top, 8)
                     }
                 }
@@ -720,69 +858,59 @@ private struct EnhancedHeartRateSection: View {
                 Image(systemName: "heart.fill")
                     .font(.system(size: 16))
                     .foregroundStyle(Theme.hrColor)
-                    .symbolEffect(.pulse, value: selectedMetric == .heartRate)
-                
+
                 Text("HEART & VITALS")
                     .font(.system(size: 12, weight: .semibold))
                     .tracking(1)
                     .foregroundStyle(Theme.textMuted)
-                
+
                 Spacer()
-                
-                // Metric selector
-                Menu {
-                    ForEach(HeartMetric.allCases, id: \.self) { metric in
-                        Button {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                selectedMetric = metric
-                                appState.provideHapticFeedback(.selection)
-                            }
-                        } label: {
-                            Label(metric.rawValue, systemImage: icon(for: metric))
+            }
+
+            // Metric selector (one-tap segmented control beats a hidden menu)
+            HStack(spacing: 4) {
+                ForEach(HeartMetric.allCases, id: \.self) { metric in
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            selectedMetric = metric
+                            appState.provideHapticFeedback(.selection)
                         }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(selectedMetric.rawValue)
+                    } label: {
+                        Text(metric.rawValue)
                             .font(.system(size: 12, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10))
+                            .foregroundStyle(selectedMetric == metric ? Theme.accentCyan : Theme.textMuted)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .frame(maxWidth: .infinity)
+                            .background(selectedMetric == metric ? Theme.accentCyan.opacity(0.12) : Color.clear)
+                            .clipShape(Capsule())
                     }
-                    .foregroundStyle(Theme.accentCyan)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Theme.accentCyan.opacity(0.1))
-                    .clipShape(Capsule())
                 }
             }
-            
-            // Metrics display
+            .padding(4)
+            .background(Theme.bgRaised.opacity(0.5))
+            .clipShape(Capsule())
+
+            // Metrics + contextual chart
             switch selectedMetric {
             case .heartRate:
                 HeartRateMetrics(session: session)
+
+                HeartRateChartView(data: appState.currentHeartRate, showLabels: true)
+                    .padding(.top, 8)
             case .hrv:
                 HRVMetrics(session: session)
+
+                if let stats = appState.activeStats, !stats.session.isEmpty {
+                    HRVChartView(sessions: stats.session)
+                        .padding(.top, 8)
+                }
             case .spo2:
                 SpO2Metrics(spo2: spo2)
-            }
-            
-            // Chart
-            if !appState.currentHeartRate.isEmpty {
-                HeartRateChartView(data: appState.currentHeartRate, showLabels: true)
-                    .frame(height: 180)
-                    .padding(.top, 8)
             }
         }
         .padding(20)
         .glassCard()
-    }
-    
-    private func icon(for metric: HeartMetric) -> String {
-        switch metric {
-        case .heartRate: return "heart.fill"
-        case .hrv: return "waveform.path.ecg"
-        case .spo2: return "lungs.fill"
-        }
     }
 }
 
@@ -943,18 +1071,18 @@ private struct EnhancedActivityDetailsSection: View {
             HStack(spacing: 12) {
                 ActivityMetricCard(
                     icon: "figure.walk",
-                    value: activity != nil ? formatNumber(activity!.steps) : "--",
+                    value: activity != nil ? Formatters.decimalString(from: activity!.steps) : "--",
                     title: "Steps",
                     color: Theme.activityColor,
                     progress: Double(activity?.steps ?? 0) / 10000
                 )
-                
+
                 ActivityMetricCard(
                     icon: "flame",
-                    value: activity != nil ? "\(activity!.activeCalories)" : "--",
+                    value: activity != nil ? Formatters.decimalString(from: activity!.activeCalories) : "--",
                     title: "Active Cal",
                     color: Theme.accentOrange,
-                    progress: Double(activity?.activeCalories ?? 0) / 500
+                    progress: calorieProgress
                 )
             }
             
@@ -985,11 +1113,11 @@ private struct EnhancedActivityDetailsSection: View {
         .padding(20)
         .glassCard()
     }
-    
-    private func formatNumber(_ num: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        return formatter.string(from: NSNumber(value: num)) ?? "\(num)"
+
+    /// Progress toward the user's own Oura calorie target rather than a magic number
+    private var calorieProgress: Double {
+        guard let activity else { return 0 }
+        return Double(activity.activeCalories) / Double(max(activity.targetCalories, 1))
     }
 }
 
@@ -1007,7 +1135,7 @@ private struct ActivityRingsView: View {
             )
             
             ActivityRing(
-                progress: Double(activity?.activeCalories ?? 0) / 500,
+                progress: Double(activity?.activeCalories ?? 0) / Double(max(activity?.targetCalories ?? 500, 1)),
                 color: Theme.accentOrange,
                 icon: "flame.fill"
             )
@@ -1261,47 +1389,64 @@ private struct ContributorCard: View {
 
 private struct ContributorImpactRow: View {
     let item: ContributorItem
-    
-    private var impact: String {
-        guard let value = item.value else { return "" }
-        if value > 10 { return "↑↑" }
-        if value > 0 { return "↑" }
-        if value < -10 { return "↓↓" }
-        if value < 0 { return "↓" }
-        return "—"
+
+    // Oura contributors are 1-100 scores (higher is better), banded like the
+    // official app - not positive/negative deltas.
+    private var bandLabel: String {
+        guard let value = item.value else { return "--" }
+        switch value {
+        case 85...: return "Optimal"
+        case 70..<85: return "Good"
+        case 60..<70: return "Fair"
+        default: return "Low"
+        }
     }
-    
-    private var impactColor: Color {
+
+    private var bandColor: Color {
         guard let value = item.value else { return Theme.textMuted }
-        if value > 0 { return Theme.accentGreen }
-        if value < 0 { return Theme.accentRose }
-        return Theme.textMuted
+        switch value {
+        case 85...: return Theme.accentGreen
+        case 70..<85: return Theme.accentCyan
+        case 60..<70: return Theme.accentOrange
+        default: return Theme.accentRose
+        }
     }
-    
+
     var body: some View {
-        HStack {
-            Circle()
-                .fill(item.color.opacity(0.2))
-                .frame(width: 6, height: 6)
-            
-            Text(item.label)
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.textSecondary)
-            
-            Spacer()
-            
-            HStack(spacing: 4) {
-                Text(impact)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(impactColor)
-                
-                Text("\(abs(item.value ?? 0))")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.textPrimary)
+        VStack(spacing: 6) {
+            HStack {
+                Text(item.label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Text(bandLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(bandColor)
+
+                    Text(item.value != nil ? "\(item.value!)" : "--")
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.textPrimary)
+                }
             }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.06))
+                        .frame(height: 4)
+
+                    Capsule()
+                        .fill(bandColor)
+                        .frame(width: geo.size.width * CGFloat(item.value ?? 0) / 100, height: 4)
+                }
+            }
+            .frame(height: 4)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .background(Theme.bgBase.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }

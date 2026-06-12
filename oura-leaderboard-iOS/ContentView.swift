@@ -12,6 +12,10 @@ struct ContentView: View {
             }
         }
         .background(Theme.bgBase)
+        .task {
+            // Load disk cache for instant UI, then refresh stale data
+            await appState.bootstrap()
+        }
     }
 }
 

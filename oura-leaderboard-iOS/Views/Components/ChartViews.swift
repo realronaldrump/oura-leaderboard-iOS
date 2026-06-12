@@ -7,73 +7,71 @@ struct HeartRateChartView: View {
     let data: [HeartRate]
     var showLabels: Bool = false
     var height: CGFloat = 180
-    
-    private var chartData: [HeartRatePoint] {
-        let now = Date()
-        let twentyFourHoursAgo = now.addingTimeInterval(-24 * 60 * 60)
-        
-        // Use pre-parsed hr.date property (parsed once using static formatter)
-        // instead of parsing timestamps here on every view refresh
-        return data.compactMap { hr -> HeartRatePoint? in
-            // hr.date uses the static Formatters.heartRateTimestamp formatter
-            guard hr.date >= twentyFourHoursAgo else { return nil }
-            return HeartRatePoint(date: hr.date, bpm: hr.bpm, source: hr.source)
+
+    private struct Summary {
+        var points: [HeartRatePoint] = []
+        var minBpm: Int?
+        var maxBpm: Int?
+        var avgBpm: Int?
+    }
+
+    /// Parse timestamps once and derive all stats in a single pass.
+    /// (Previously each stat re-parsed the entire dataset.)
+    private var summary: Summary {
+        let points = data.compactMap { hr -> HeartRatePoint? in
+            guard let date = Formatters.parseISO8601(hr.timestamp) else { return nil }
+            return HeartRatePoint(date: date, bpm: hr.bpm, source: hr.source)
         }.sorted { $0.date < $1.date }
+
+        var summary = Summary(points: points)
+        if !points.isEmpty {
+            let bpms = points.map(\.bpm)
+            summary.minBpm = bpms.min()
+            summary.maxBpm = bpms.max()
+            summary.avgBpm = bpms.reduce(0, +) / bpms.count
+        }
+        return summary
     }
-    
-    private var avgBpm: Int? {
-        guard !chartData.isEmpty else { return nil }
-        return chartData.map(\.bpm).reduce(0, +) / chartData.count
-    }
-    
-    private var minBpm: Int? {
-        chartData.map(\.bpm).min()
-    }
-    
-    private var maxBpm: Int? {
-        chartData.map(\.bpm).max()
-    }
-    
+
     var body: some View {
+        let summary = summary
+
         VStack(alignment: .leading, spacing: 8) {
-            if showLabels {
+            if showLabels && !summary.points.isEmpty {
                 HStack(spacing: 16) {
-                    StatLabel(label: "Min", value: minBpm, color: Theme.hrColor)
-                    StatLabel(label: "Avg", value: avgBpm, color: Theme.textPrimary)
-                    StatLabel(label: "Max", value: maxBpm, color: Theme.hrColor)
+                    StatLabel(label: "Min", value: summary.minBpm, color: Theme.hrColor)
+                    StatLabel(label: "Avg", value: summary.avgBpm, color: Theme.textPrimary)
+                    StatLabel(label: "Max", value: summary.maxBpm, color: Theme.hrColor)
                     Spacer()
-                    Text("Last 24 hours")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textMuted)
                 }
             }
-            
-            if chartData.isEmpty {
+
+            if summary.points.isEmpty {
                 ContentUnavailableView(
                     "No heart rate data",
                     systemImage: "heart.slash",
-                    description: Text("Data from the last 24 hours will appear here")
+                    description: Text("Heart rate for this day will appear here")
                 )
                 .frame(height: height)
             } else {
-                Chart(chartData) { point in
-                    LineMark(
-                        x: .value("Time", point.date),
-                        y: .value("BPM", point.bpm)
-                    )
-                    .foregroundStyle(Theme.hrColor)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5))
-                    
-                    if let avg = avgBpm {
+                Chart {
+                    ForEach(summary.points) { point in
+                        LineMark(
+                            x: .value("Time", point.date),
+                            y: .value("BPM", point.bpm)
+                        )
+                        .foregroundStyle(Theme.hrColor)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    }
+
+                    if let avg = summary.avgBpm {
                         RuleMark(y: .value("Average", avg))
                             .foregroundStyle(Theme.borderDefault)
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     }
                 }
-                .chartXAxis(showLabels ? .visible : .hidden)
-                .chartYAxis(showLabels ? .visible : .hidden)
                 .chartXAxis {
-                    AxisMarks(values: .stride(by: .hour, count: 4)) { value in
+                    AxisMarks(values: .stride(by: .hour, count: 4)) { _ in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                             .foregroundStyle(Theme.borderSubtle)
                         AxisValueLabel(format: .dateTime.hour())
@@ -81,7 +79,7 @@ struct HeartRateChartView: View {
                     }
                 }
                 .chartYAxis {
-                    AxisMarks { value in
+                    AxisMarks { _ in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                             .foregroundStyle(Theme.borderSubtle)
                         AxisValueLabel()
@@ -129,20 +127,23 @@ struct HRVChartView: View {
     var days: Int = 30
     var height: CGFloat = 160
     
+    // sessions arrive newest first; reverse for chronological left-to-right
     private var chartData: [HRVPoint] {
         sessions.prefix(days).reversed().compactMap { session -> HRVPoint? in
             guard let hrv = session.averageHrv else { return nil }
-            return HRVPoint(day: session.day, hrv: hrv)
+            return HRVPoint(day: String(session.day.suffix(5)), hrv: hrv)
         }
     }
-    
+
     var body: some View {
+        let chartData = chartData
+
         VStack(alignment: .leading, spacing: 8) {
             Text("HRV TREND (30 DAYS)")
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(1)
                 .foregroundStyle(Theme.textMuted)
-            
+
             if chartData.isEmpty {
                 ContentUnavailableView(
                     "No HRV data",
@@ -158,7 +159,7 @@ struct HRVChartView: View {
                     )
                     .foregroundStyle(Theme.hrvColor)
                     .lineStyle(StrokeStyle(lineWidth: 2))
-                    
+
                     AreaMark(
                         x: .value("Day", point.day),
                         y: .value("HRV", point.hrv)
@@ -172,7 +173,7 @@ struct HRVChartView: View {
                     )
                 }
                 .chartXAxis {
-                    AxisMarks(values: .stride(by: 7)) { value in
+                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                             .foregroundStyle(Theme.borderSubtle)
                         AxisValueLabel()
@@ -213,6 +214,7 @@ struct SleepStagesChartView: View {
     var days: Int = 14
     var height: CGFloat = 200
     
+    // sessions arrive newest first; reverse for chronological left-to-right
     private var chartData: [SleepStageData] {
         sessions.prefix(days).reversed().map { session in
             SleepStageData(
@@ -224,8 +226,10 @@ struct SleepStagesChartView: View {
             )
         }
     }
-    
+
     var body: some View {
+        let chartData = chartData
+
         VStack(alignment: .leading, spacing: 8) {
             Text("SLEEP ARCHITECTURE (14 DAYS)")
                 .font(.system(size: 11, weight: .semibold))
@@ -335,8 +339,9 @@ struct HistoryChartView: View {
     let color: Color
     var height: CGFloat = 48
     
+    // data arrives newest first; reverse for chronological left-to-right
     private var chartData: [ChartPoint] {
-        data.suffix(7).reversed().enumerated().compactMap { index, score in
+        data.prefix(7).reversed().enumerated().compactMap { index, score in
             guard let score = score else { return nil }
             return ChartPoint(index: index, value: score)
         }

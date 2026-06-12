@@ -478,14 +478,6 @@ struct Workout: Codable, Identifiable, Sendable {
     }
 }
 
-// MARK: - View Mode
-
-enum ViewMode: String, CaseIterable {
-    case daily = "Daily"
-    case versus = "Versus"
-    case history = "History"
-}
-
 // MARK: - Leaderboard Entry
 
 struct LeaderboardEntry: Identifiable, Sendable {
@@ -574,21 +566,32 @@ func formatTime(_ isoString: String?) -> String {
 
 struct ProfileData {
     private var dayDataMap: [String: DayData] = [:]
-    
-    var availableDates: [Date] {
-        // Use static formatter instead of creating new instance
-        dayDataMap.keys.compactMap { Formatters.date(fromDayKey: $0) }
+
+    /// Dates with data, sorted newest first. Rebuilt on mutation rather than
+    /// recomputed on every access (views read this many times per render).
+    private(set) var availableDates: [Date] = []
+
+    /// Aggregated stats sorted newest first. Rebuilt on mutation.
+    private var cachedStats: DailyStats = .empty
+
+    init() {}
+
+    /// Bulk initializer (e.g., when loading from disk) - rebuilds caches once.
+    init(dayDataMap: [String: DayData]) {
+        self.dayDataMap = dayDataMap
+        rebuildCaches()
     }
-    
+
     func getDayData(for dateKey: String) -> DayData? {
         dayDataMap[dateKey]
     }
-    
+
     mutating func setDayData(_ data: DayData, for dateKey: String) {
         dayDataMap[dateKey] = data
+        rebuildCaches()
     }
-    
-    mutating func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness], 
+
+    mutating func updateDailyData(sleep: [DailySleep], readiness: [DailyReadiness],
                         activity: [DailyActivity], sessions: [SleepSession]) {
         // Update sleep data
         for item in sleep {
@@ -597,7 +600,7 @@ struct ProfileData {
             }
             dayDataMap[item.day]?.sleep = item
         }
-        
+
         // Update readiness data
         for item in readiness {
             if dayDataMap[item.day] == nil {
@@ -605,7 +608,7 @@ struct ProfileData {
             }
             dayDataMap[item.day]?.readiness = item
         }
-        
+
         // Update activity data
         for item in activity {
             if dayDataMap[item.day] == nil {
@@ -613,7 +616,7 @@ struct ProfileData {
             }
             dayDataMap[item.day]?.activity = item
         }
-        
+
         // Update session data
         for session in sessions {
             if dayDataMap[session.day] == nil {
@@ -621,23 +624,26 @@ struct ProfileData {
             }
             dayDataMap[session.day]?.session = session
         }
+
+        rebuildCaches()
     }
-    
+
     mutating func updateHeartRateData(heartRate: [HeartRate]) {
-        // Use static formatter instead of creating new instance
-        // Group heart rate by day
+        // Group heart rate by day using the static formatter
         let grouped = Dictionary(grouping: heartRate) { hr in
             Formatters.dayKeyString(from: hr.date)
         }
-        
+
         for (dateKey, hrData) in grouped {
             if dayDataMap[dateKey] == nil {
                 dayDataMap[dateKey] = DayData()
             }
             dayDataMap[dateKey]?.heartRate = hrData.sorted { $0.timestamp < $1.timestamp }
         }
+
+        rebuildCaches()
     }
-    
+
     mutating func updateSpo2Data(spo2: [DailySpO2]) {
         for item in spo2 {
             if dayDataMap[item.day] == nil {
@@ -645,41 +651,31 @@ struct ProfileData {
             }
             dayDataMap[item.day]?.spo2 = item
         }
+
+        rebuildCaches()
     }
 
-    var sleep: [DailySleep] {
-        toDailyStats().sleep
-    }
-    
-    var readiness: [DailyReadiness] {
-        toDailyStats().readiness
-    }
-    
-    var activity: [DailyActivity] {
-        toDailyStats().activity
-    }
-    
-    var session: [SleepSession] {
-        toDailyStats().session
-    }
-    
-    var spo2: [DailySpO2] {
-        toDailyStats().spo2
-    }
-    
-    var stress: [DailyStress] {
-        toDailyStats().stress
-    }
-    
-    var resilience: [DailyResilience] {
-        toDailyStats().resilience
-    }
-    
+    var sleep: [DailySleep] { cachedStats.sleep }
+    var readiness: [DailyReadiness] { cachedStats.readiness }
+    var activity: [DailyActivity] { cachedStats.activity }
+    var session: [SleepSession] { cachedStats.session }
+    var spo2: [DailySpO2] { cachedStats.spo2 }
+    var stress: [DailyStress] { cachedStats.stress }
+    var resilience: [DailyResilience] { cachedStats.resilience }
+
     func toDailyStats() -> DailyStats {
-        let sortedDays = dayDataMap.keys.sorted()
+        cachedStats
+    }
+
+    /// Rebuild the sorted-date and aggregate-stats caches.
+    /// "yyyy-MM-dd" keys sort lexicographically == chronologically;
+    /// descending order means newest first, matching every consumer.
+    private mutating func rebuildCaches() {
+        let sortedDays = dayDataMap.keys.sorted(by: >)
+        availableDates = sortedDays.compactMap { Formatters.date(fromDayKey: $0) }
+
         let allData = sortedDays.compactMap { dayDataMap[$0] }
-        
-        return DailyStats(
+        cachedStats = DailyStats(
             sleep: allData.compactMap { $0.sleep },
             readiness: allData.compactMap { $0.readiness },
             activity: allData.compactMap { $0.activity },

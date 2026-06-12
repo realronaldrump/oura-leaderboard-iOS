@@ -128,5 +128,6 @@ enum AppConstants: Sendable {
     nonisolated static let appName = "Davis Watches You Sleep"
     nonisolated static let defaultDataRangeDays = 30
     nonisolated static let allTimeStartDate = "2016-01-01"
-    nonisolated static let heartRateDataRangeDays = 2
+    // 7 days of heart rate so past days in date navigation still have charts
+    nonisolated static let heartRateDataRangeDays = 7
 }

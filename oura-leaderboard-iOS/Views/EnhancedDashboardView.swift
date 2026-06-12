@@ -6,8 +6,14 @@ import Foundation
 struct EnhancedDashboardView: View {
     @Environment(AppState.self) private var appState
     @State private var showingProfileSwitcher = false
-    @State private var selectedTab = 0
-    
+    @State private var selectedTab: DashboardTab = .daily
+
+    enum DashboardTab: Int, Hashable {
+        case daily = 0
+        case versus = 1
+        case history = 2
+    }
+
     private var isShowingError: Binding<Bool> {
         Binding(
             get: { appState.errorMessage != nil },
@@ -18,12 +24,12 @@ struct EnhancedDashboardView: View {
             }
         )
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Theme.bgBase.ignoresSafeArea()
-                
+
                 if appState.globalLoadingState.isLoading && appState.activeStats == nil {
                     EnhancedLoadingView()
                 } else {
@@ -33,43 +39,51 @@ struct EnhancedDashboardView: View {
                             LazyVStack(spacing: 24) {
                                 HeroSection()
                                     .padding(.top, 12)
-                                
+
                                 EnhancedDailyContentView()
                             }
                             .padding(.horizontal, 16)
-                            .padding(.bottom, 100)
+                            .padding(.bottom, 110)
                         }
                         .refreshable {
-                            await appState.refreshActiveProfile()
+                            await appState.refreshAllProfiles()
                         }
-                        .tag(0)
-                        
+                        .scrollIndicators(.hidden)
+                        .tag(DashboardTab.daily)
+
                         // Versus Tab (if multiple users)
                         if appState.profiles.count > 1 {
                             ScrollView {
-                                VersusContentView()
+                                VersusView()
                                     .padding(.horizontal, 16)
-                                    .padding(.bottom, 100)
+                                    .padding(.top, 12)
+                                    .padding(.bottom, 110)
                             }
-                            .tag(1)
+                            .refreshable {
+                                await appState.refreshAllProfiles()
+                            }
+                            .scrollIndicators(.hidden)
+                            .tag(DashboardTab.versus)
                         }
-                        
+
                         // History Tab
                         ScrollView {
-                            HistoryContentView()
+                            HistoryView()
                                 .padding(.horizontal, 16)
-                                .padding(.bottom, 100)
+                                .padding(.top, 12)
+                                .padding(.bottom, 110)
                         }
-                        .tag(appState.profiles.count > 1 ? 2 : 1)
+                        .scrollIndicators(.hidden)
+                        .tag(DashboardTab.history)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedTab)
                 }
-                
+
                 // Floating Tab Bar
                 VStack {
                     Spacer()
-                    FloatingTabBar(selectedTab: $selectedTab, hasMultipleProfiles: appState.profiles.count > 1)
+                    FloatingTabBar(selectedTab: $selectedTab, showsVersus: appState.profiles.count > 1)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 20)
                 }
@@ -79,9 +93,9 @@ struct EnhancedDashboardView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     ProfileButton(showingProfileSwitcher: $showingProfileSwitcher)
                 }
-                
+
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    NotificationButton()
+                    RefreshButton()
                 }
             }
         }
@@ -102,9 +116,10 @@ struct EnhancedDashboardView: View {
                 SyncBanner()
             }
         }
-        .task {
-            if appState.activeProfile != nil && appState.activeStats == nil {
-                await appState.refreshActiveProfile()
+        .onChange(of: appState.profiles.count) { _, newCount in
+            // If the Versus tab disappears while selected, fall back to Daily
+            if newCount <= 1 && selectedTab == .versus {
+                selectedTab = .daily
             }
         }
     }
@@ -214,40 +229,45 @@ private struct HeroSection: View {
         }
         .padding(.vertical, 8)
     }
-    
+
     private func timeAgo(from date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+        Formatters.relativeTime.localizedString(for: date, relativeTo: Date())
     }
 }
 
 // MARK: - Floating Tab Bar
 
 private struct FloatingTabBar: View {
-    @Binding var selectedTab: Int
-    let hasMultipleProfiles: Bool
+    @Binding var selectedTab: EnhancedDashboardView.DashboardTab
+    let showsVersus: Bool
     @Environment(AppState.self) private var appState
-    
-    private var tabs: [(String, String)] {
-        var items = [("house.fill", "Daily")]
-        if hasMultipleProfiles {
-            items.append(("person.2.fill", "Versus"))
+
+    private struct TabItem: Identifiable {
+        let tab: EnhancedDashboardView.DashboardTab
+        let icon: String
+        let title: String
+        var id: Int { tab.rawValue }
+    }
+
+    private var tabs: [TabItem] {
+        var items = [TabItem(tab: .daily, icon: "house.fill", title: "Daily")]
+        if showsVersus {
+            items.append(TabItem(tab: .versus, icon: "person.2.fill", title: "Versus"))
         }
-        items.append(("chart.line.uptrend.xyaxis", "History"))
+        items.append(TabItem(tab: .history, icon: "chart.line.uptrend.xyaxis", title: "History"))
         return items
     }
-    
+
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(0..<tabs.count, id: \.self) { index in
+            ForEach(tabs) { item in
                 TabButton(
-                    icon: tabs[index].0,
-                    title: tabs[index].1,
-                    isSelected: selectedTab == index
+                    icon: item.icon,
+                    title: item.title,
+                    isSelected: selectedTab == item.tab
                 ) {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        selectedTab = index
+                        selectedTab = item.tab
                         appState.provideHapticFeedback(.selection)
                     }
                 }
@@ -336,30 +356,29 @@ private struct ProfileButton: View {
     }
 }
 
-// MARK: - Notification Button
+// MARK: - Refresh Button
 
-private struct NotificationButton: View {
-    @State private var hasNotifications = false
+private struct RefreshButton: View {
     @Environment(AppState.self) private var appState
-    
+
     var body: some View {
         Button {
             appState.provideHapticFeedback(.light)
-            // Handle notifications
+            Task {
+                await appState.refreshAllProfiles()
+            }
         } label: {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "bell")
-                    .font(.system(size: 18, weight: .medium))
+            if appState.isSyncing {
+                ProgressView()
+                    .tint(Theme.accentCyan)
+            } else {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
-                
-                if hasNotifications {
-                    Circle()
-                        .fill(Theme.accentRose)
-                        .frame(width: 8, height: 8)
-                        .offset(x: 4, y: -2)
-                }
             }
         }
+        .disabled(appState.isSyncing)
+        .accessibilityLabel("Refresh data")
     }
 }
 
@@ -603,32 +622,6 @@ private struct SyncBanner: View {
             insertion: .push(from: .top).combined(with: .opacity),
             removal: .push(from: .top).combined(with: .opacity)
         ))
-    }
-}
-
-// MARK: - Versus Content View (Placeholder)
-
-private struct VersusContentView: View {
-    var body: some View {
-        VStack {
-            Text("Versus View")
-                .font(.largeTitle)
-                .foregroundStyle(Theme.textPrimary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-// MARK: - History Content View (Placeholder)
-
-private struct HistoryContentView: View {
-    var body: some View {
-        VStack {
-            Text("History View")
-                .font(.largeTitle)
-                .foregroundStyle(Theme.textPrimary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

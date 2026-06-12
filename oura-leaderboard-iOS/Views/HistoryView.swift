@@ -9,33 +9,35 @@ struct HistoryView: View {
     @State private var selectedUser: String? = nil
     @State private var sortColumn: SortColumn = .date
     @State private var sortAscending = false
-    
+    @State private var isLoadingAllTime = false
+
     private var allTimeData: [HistoryDataPoint] {
         var points: [HistoryDataPoint] = []
-        
+
         for profile in appState.profiles {
             // Use regular stats if all-time not loaded
-            let stats = appState.allTimeStats[profile.id] ?? appState.dailyStats[profile.id]
+            let stats = appState.allTimeStats[profile.id] ?? appState.getDailyStats(for: profile.id)
             guard let stats = stats else { continue }
-            
+
             let data = selectedMetricData(from: stats)
-            
+
             for item in data {
-                if let score = item.score {
+                if let score = item.score, let date = Formatters.date(fromDayKey: item.day) {
                     points.append(HistoryDataPoint(
-                        id: UUID().uuidString,
+                        id: "\(profile.id)-\(item.day)",
                         userId: profile.id,
                         userName: profile.displayName,
                         day: item.day,
+                        date: date,
                         score: score
                     ))
                 }
             }
         }
-        
+
         return points
     }
-    
+
     private func selectedMetricData(from stats: DailyStats) -> [(day: String, score: Int?)] {
         switch selectedMetric {
         case .readiness:
@@ -46,16 +48,16 @@ struct HistoryView: View {
             return stats.activity.map { ($0.day, $0.score) }
         }
     }
-    
-    private var filteredData: [HistoryDataPoint] {
+
+    private func filtered(_ points: [HistoryDataPoint]) -> [HistoryDataPoint] {
         if let userId = selectedUser {
-            return allTimeData.filter { $0.userId == userId }
+            return points.filter { $0.userId == userId }
         }
-        return allTimeData
+        return points
     }
-    
-    private var sortedData: [HistoryDataPoint] {
-        filteredData.sorted { a, b in
+
+    private func sorted(_ points: [HistoryDataPoint]) -> [HistoryDataPoint] {
+        points.sorted { a, b in
             let result: Bool
             switch sortColumn {
             case .name:
@@ -68,8 +70,12 @@ struct HistoryView: View {
             return sortAscending ? !result : result
         }
     }
-    
+
     var body: some View {
+        // Compute the dataset once per render instead of once per consumer
+        let chartData = filtered(allTimeData)
+        let tableData = sorted(chartData)
+
         VStack(spacing: 20) {
             // Filters
             HStack {
@@ -144,33 +150,40 @@ struct HistoryView: View {
             }
             
             // Chart
-            HistoryScatterChart(data: filteredData, color: metricColor)
+            HistoryScatterChart(data: chartData, color: metricColor)
                 .frame(height: 200)
-            
+
             // Table
             HistoryTable(
-                data: sortedData,
+                data: tableData,
                 metricColor: metricColor,
                 sortColumn: $sortColumn,
                 sortAscending: $sortAscending
             )
-            
+
             // Load all-time button
             if appState.allTimeStats.isEmpty {
                 Button {
+                    guard !isLoadingAllTime else { return }
                     Task {
-                        for profile in appState.profiles {
-                            await appState.loadAllTimeStats(for: profile)
-                        }
+                        isLoadingAllTime = true
+                        await appState.loadAllTimeStats()
+                        isLoadingAllTime = false
                     }
                 } label: {
                     HStack {
-                        Image(systemName: "arrow.down.circle")
-                        Text("Load All-Time History")
+                        if isLoadingAllTime {
+                            ProgressView()
+                                .tint(Theme.textPrimary)
+                        } else {
+                            Image(systemName: "arrow.down.circle")
+                        }
+                        Text(isLoadingAllTime ? "Loading History…" : "Load All-Time History")
                     }
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.secondary)
+                .disabled(isLoadingAllTime)
             }
         }
     }
@@ -209,6 +222,7 @@ struct HistoryDataPoint: Identifiable {
     let userId: String
     let userName: String
     let day: String
+    let date: Date
     let score: Int
 }
 
@@ -217,7 +231,19 @@ struct HistoryDataPoint: Identifiable {
 private struct HistoryScatterChart: View {
     let data: [HistoryDataPoint]
     let color: Color
-    
+
+    private var userNames: [String] {
+        Array(Set(data.map(\.userName))).sorted()
+    }
+
+    private var palette: [Color] {
+        let base: [Color] = [
+            color, Theme.accentPurple, Theme.accentGreen,
+            Theme.accentRose, Theme.accentCyan, Theme.accentOrange
+        ]
+        return userNames.indices.map { base[$0 % base.count] }
+    }
+
     var body: some View {
         if data.isEmpty {
             ContentUnavailableView(
@@ -228,16 +254,21 @@ private struct HistoryScatterChart: View {
         } else {
             Chart(data) { point in
                 PointMark(
-                    x: .value("Date", point.day),
+                    x: .value("Date", point.date),
                     y: .value("Score", point.score)
                 )
-                .foregroundStyle(color.opacity(0.7))
+                .foregroundStyle(by: .value("User", point.userName))
                 .symbolSize(30)
+                .opacity(0.75)
             }
+            .chartForegroundStyleScale(domain: userNames, range: palette)
+            .chartLegend(userNames.count > 1 ? .visible : .hidden)
             .chartXAxis {
-                AxisMarks(values: .stride(by: 7)) { _ in
+                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                         .foregroundStyle(Theme.borderSubtle)
+                    AxisValueLabel(format: .dateTime.month().day())
+                        .foregroundStyle(Theme.textMuted)
                 }
             }
             .chartYAxis {
@@ -287,8 +318,8 @@ private struct HistoryTable: View {
                                 .font(.system(size: 13))
                                 .foregroundStyle(Theme.textSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            Text(formatDate(point.day))
+
+                            Text(Formatters.displayDateMedium.string(from: point.date))
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.textMuted)
                                 .frame(width: 100)
@@ -314,14 +345,6 @@ private struct HistoryTable: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Theme.borderSubtle, lineWidth: 1)
         )
-    }
-    
-    private func formatDate(_ day: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: day) else { return day }
-        formatter.dateFormat = "MMM d, yyyy"
-        return formatter.string(from: date)
     }
 }
 

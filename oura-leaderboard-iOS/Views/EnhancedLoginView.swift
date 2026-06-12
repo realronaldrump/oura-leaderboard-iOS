@@ -6,7 +6,6 @@ struct EnhancedLoginView: View {
     @Environment(AppState.self) private var appState
     @State private var logoScale: CGFloat = 0.8
     @State private var contentOpacity: Double = 0
-    @State private var orbPositions: [CGPoint] = []
     
     private var isShowingError: Binding<Bool> {
         Binding(
@@ -242,8 +241,7 @@ private struct FloatingOrb: View {
     let bounds: CGSize
     
     @State private var position: CGPoint = .zero
-    @State private var targetPosition: CGPoint = .zero
-    
+
     var body: some View {
         Circle()
             .fill(
@@ -259,25 +257,28 @@ private struct FloatingOrb: View {
             .position(position)
             .onAppear {
                 position = randomPosition()
-                animateOrb()
+                // Drift back and forth between two points forever - no
+                // unbounded DispatchQueue recursion keeping the view alive
+                withAnimation(
+                    .easeInOut(duration: Double.random(in: 15...25))
+                    .repeatForever(autoreverses: true)
+                    .delay(delay)
+                ) {
+                    position = randomPosition()
+                }
             }
     }
-    
+
     private func randomPosition() -> CGPoint {
-        CGPoint(
-            x: CGFloat.random(in: size/2...(bounds.width - size/2)),
-            y: CGFloat.random(in: size/2...(bounds.height - size/2))
+        // Guard against zero/small bounds during initial layout
+        let minX = size / 2
+        let maxX = Swift.max(bounds.width - size / 2, minX + 1)
+        let minY = size / 2
+        let maxY = Swift.max(bounds.height - size / 2, minY + 1)
+        return CGPoint(
+            x: CGFloat.random(in: minX...maxX),
+            y: CGFloat.random(in: minY...maxY)
         )
-    }
-    
-    private func animateOrb() {
-        withAnimation(.easeInOut(duration: Double.random(in: 15...25)).delay(delay)) {
-            position = randomPosition()
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 15...25) + delay) {
-            animateOrb()
-        }
     }
 }
 
